@@ -11,6 +11,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Booking> Bookings => Set<Booking>();
     public DbSet<BookingItem> BookingItems => Set<BookingItem>();
     public DbSet<Event> Events => Set<Event>();
+    public DbSet<EqPhoto> EqPhotos => Set<EqPhoto>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
