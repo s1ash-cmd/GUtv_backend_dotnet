@@ -2,7 +2,7 @@
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.GraphQL.Mutations;
 using GUtv_backend_dotnet.GraphQL.Queries;
-// using GUtv_backend_dotnet.Services;
+using GUtv_backend_dotnet.Services;
 // using GUtv_backend_dotnet.Services.Telegram;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -40,7 +40,7 @@ builder.Services.AddCors(options =>
         policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
 // builder.Services.AddScoped<UserService>();
-// builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<AuthService>();
 // builder.Services.AddScoped<EquipmentService>();
 // builder.Services.AddScoped<BookingService>();
 
