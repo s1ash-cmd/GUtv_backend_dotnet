@@ -65,6 +65,19 @@ public class UserService
             u.RefreshTokenExpiryTime > DateTime.UtcNow);
     }
 
+    public async Task<User> EnsureRoleUpgradeOnAuthorizationAsync(User user)
+    {
+        if (user.Role != UserRole.User)
+            return user;
+
+        if (user.JoinYear > DateTime.UtcNow.Year - 1)
+            return user;
+
+        user.Role = UserRole.Osnova;
+        await _db.SaveChangesAsync();
+        return user;
+    }
+
     public async Task<User> SetRole(int userId, UserRole role)
     {
         var user = await _db.Users.FindAsync(userId)

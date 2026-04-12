@@ -43,6 +43,8 @@ public class UserMutation
         if (user.Banned)
             throw new GraphQLException("Пользователь заблокирован");
 
+        user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
+
         var accessToken = authService.GenerateAccessToken(user);
         var refreshToken = authService.GenerateRefreshToken();
 
@@ -63,6 +65,8 @@ public class UserMutation
 
         if (user.Banned)
             throw new GraphQLException("Пользователь заблокирован");
+
+        user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
 
         var newAccessToken = authService.GenerateAccessToken(user);
         var newRefreshToken = authService.GenerateRefreshToken();
