@@ -17,8 +17,9 @@ public class AuthService(IConfiguration config)
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(JwtRegisteredClaimNames.UniqueName, user.Login),
-            new Claim(JwtRegisteredClaimNames.Name, user.Name),
+            new Claim(ClaimTypes.Name, user.Name),
             new Claim(ClaimTypes.Role, user.Role.ToString())
         };
 
@@ -27,7 +28,7 @@ public class AuthService(IConfiguration config)
             audience: config["Jwt:Audience"],
             claims: claims,
             expires: DateTime.UtcNow.AddMinutes(
-                int.Parse(config["Jwt:ExpireMinutes" ?? "15"])),
+                int.Parse(config["Jwt:ExpireMinutes"] ?? "15")),
             signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256)
         );
 

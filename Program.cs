@@ -1,13 +1,12 @@
-﻿using System.Text;
+﻿using System.Security.Claims;
+using System.Text;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.GraphQL.Mutations;
 using GUtv_backend_dotnet.GraphQL.Queries;
 using GUtv_backend_dotnet.Services;
-// using GUtv_backend_dotnet.Services.Telegram;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-// using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,28 +28,25 @@ builder.Services
             ValidateIssuerSigningKey = true,
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
             ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+            NameClaimType = ClaimTypes.Name,
+            RoleClaimType = ClaimTypes.Role
         };
     });
 
 builder.Services.AddAuthorization();
+builder.Services.AddHttpContextAccessor();
 
 builder.Services.AddCors(options =>
     options.AddPolicy("AllowAll", policy =>
         policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
 
-// builder.Services.AddScoped<UserService>();
+builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<AuthService>();
-// builder.Services.AddScoped<EquipmentService>();
-// builder.Services.AddScoped<BookingService>();
+builder.Services.AddScoped<EquipmentService>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");
-
-// builder.Services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(botToken));
-// builder.Services.AddSingleton<TelegramUpdateHandler>();
-// builder.Services.AddHostedService<TelegramBotService>();
-// builder.Services.AddScoped<TelegramNotificationService>();
 
 builder.Services
     .AddGraphQLServer()
@@ -58,6 +54,9 @@ builder.Services
     .AddMutationType<Mutation>()
     .AddProjections()
     .AddFiltering()
+    .AddTypeExtension<UserMutation>()
+    .AddTypeExtension<EquipmentQueries>()
+    .AddTypeExtension<EquipmentMutations>()
     .AddSorting()
     .AddAuthorization();
 
