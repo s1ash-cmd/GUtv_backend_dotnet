@@ -12,6 +12,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<BookingItem> BookingItems => Set<BookingItem>();
     public DbSet<Event> Events => Set<Event>();
     public DbSet<EqPhoto> EqPhotos => Set<EqPhoto>();
+    public DbSet<Cart> Carts => Set<Cart>();
+    public DbSet<CartItem> CartItems => Set<CartItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -19,6 +21,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<EqItem>()
             .HasIndex(e => e.InventoryNumber)
+            .IsUnique();
+
+        modelBuilder.Entity<Cart>()
+            .HasIndex(c => c.UserId)
+            .IsUnique();
+
+        modelBuilder.Entity<CartItem>()
+            .HasIndex(ci => new { ci.CartId, ci.EqModelId })
             .IsUnique();
 
         modelBuilder.Entity<BookingItem>()
@@ -37,6 +47,24 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(i => i.EqModel)
             .WithMany(m => m.EqItems)
             .HasForeignKey(i => i.EqModelId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Cart>()
+            .HasOne(c => c.User)
+            .WithOne(u => u.Cart)
+            .HasForeignKey<Cart>(c => c.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<CartItem>()
+            .HasOne(ci => ci.Cart)
+            .WithMany(c => c.Items)
+            .HasForeignKey(ci => ci.CartId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<CartItem>()
+            .HasOne(ci => ci.EqModel)
+            .WithMany(m => m.CartItems)
+            .HasForeignKey(ci => ci.EqModelId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

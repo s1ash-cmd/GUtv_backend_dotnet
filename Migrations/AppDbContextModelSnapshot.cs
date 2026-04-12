@@ -98,6 +98,68 @@ namespace GUtv_backend_dotnet.Migrations
                     b.ToTable("BookingItems");
                 });
 
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.Cart", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Comment")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("EndTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("StartTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId")
+                        .IsUnique();
+
+                    b.ToTable("Carts");
+                });
+
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.CartItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<int>("CartId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("EqModelId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CartId", "EqModelId")
+                        .IsUnique();
+
+                    b.HasIndex("EqModelId");
+
+                    b.ToTable("CartItems");
+                });
+
             modelBuilder.Entity("GUtv_backend_dotnet.Models.EqItem", b =>
                 {
                     b.Property<int>("Id")
@@ -307,6 +369,36 @@ namespace GUtv_backend_dotnet.Migrations
                     b.Navigation("EqItem");
                 });
 
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.Cart", b =>
+                {
+                    b.HasOne("GUtv_backend_dotnet.Models.User", "User")
+                        .WithOne("Cart")
+                        .HasForeignKey("GUtv_backend_dotnet.Models.Cart", "UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.CartItem", b =>
+                {
+                    b.HasOne("GUtv_backend_dotnet.Models.Cart", "Cart")
+                        .WithMany("Items")
+                        .HasForeignKey("CartId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("GUtv_backend_dotnet.Models.EqModel", "EqModel")
+                        .WithMany("CartItems")
+                        .HasForeignKey("EqModelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Cart");
+
+                    b.Navigation("EqModel");
+                });
+
             modelBuilder.Entity("GUtv_backend_dotnet.Models.EqItem", b =>
                 {
                     b.HasOne("GUtv_backend_dotnet.Models.EqModel", "EqModel")
@@ -343,12 +435,21 @@ namespace GUtv_backend_dotnet.Migrations
                 {
                     b.Navigation("EqItems");
 
+                    b.Navigation("CartItems");
+
                     b.Navigation("Photos");
                 });
 
             modelBuilder.Entity("GUtv_backend_dotnet.Models.User", b =>
                 {
                     b.Navigation("Bookings");
+
+                    b.Navigation("Cart");
+                });
+
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.Cart", b =>
+                {
+                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

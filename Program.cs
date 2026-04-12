@@ -3,6 +3,7 @@ using System.Text;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.GraphQL.Mutations;
 using GUtv_backend_dotnet.GraphQL.Queries;
+using GUtv_backend_dotnet.GraphQL.Types;
 using GUtv_backend_dotnet.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -44,6 +45,9 @@ builder.Services.AddCors(options =>
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<EquipmentService>();
+builder.Services.AddScoped<BookingService>();
+builder.Services.AddScoped<EventService>();
+builder.Services.AddScoped<CartService>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");
@@ -54,9 +58,20 @@ builder.Services
     .AddMutationType<Mutation>()
     .AddProjections()
     .AddFiltering()
+    .AddType<UserRoleType>()
+    .AddType<EqCategoryType>()
+    .AddType<EqAccessType>()
+    .AddType<BookingStatusType>()
+    .AddTypeExtension<UserQueries>()
     .AddTypeExtension<UserMutation>()
     .AddTypeExtension<EquipmentQueries>()
     .AddTypeExtension<EquipmentMutations>()
+    .AddTypeExtension<BookingQueries>()
+    .AddTypeExtension<BookingMutations>()
+    .AddTypeExtension<EventQueries>()
+    .AddTypeExtension<EventMutations>()
+    .AddTypeExtension<CartQueries>()
+    .AddTypeExtension<CartMutations>()
     .AddSorting()
     .AddAuthorization();
 
