@@ -13,6 +13,7 @@ public sealed class UserRoleType : EnumType<UserRole>
         descriptor.Value(UserRole.Osnova).Name(nameof(UserRole.Osnova));
         descriptor.Value(UserRole.Ronin).Name(nameof(UserRole.Ronin));
         descriptor.Value(UserRole.Admin).Name(nameof(UserRole.Admin));
+        descriptor.Value(UserRole.Organization).Name(nameof(UserRole.Organization));
     }
 }
 

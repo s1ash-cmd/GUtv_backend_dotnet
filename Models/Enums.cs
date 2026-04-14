@@ -5,7 +5,8 @@ public enum UserRole
     User,
     Osnova,
     Ronin,
-    Admin
+    Admin,
+    Organization
 }
 
 public enum EqCategory

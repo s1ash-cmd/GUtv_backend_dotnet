@@ -1,15 +1,32 @@
 using GUtv_backend_dotnet.Models;
 using GUtv_backend_dotnet.Services;
+using HotChocolate;
 using HotChocolate.Authorization;
+using Microsoft.AspNetCore.Http;
 
 namespace GUtv_backend_dotnet.GraphQL.Mutations;
 
 [ExtendObjectType(typeof(Mutation))]
 public class EventMutations
 {
+    [Authorize]
+    public Task<Event> CreateEvent(
+        CreateEventInput input,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        EventService eventService)
+    {
+        var user = httpContextAccessor.HttpContext?.User;
+        var canCreateEvent =
+            user?.IsInRole(nameof(UserRole.Admin)) == true ||
+            user?.IsInRole(nameof(UserRole.Organization)) == true;
 
-    public Task<Event> CreateEvent(CreateEventInput input, EventService eventService) =>
-        eventService.CreateEventAsync(input);
+        if (!canCreateEvent)
+            throw new GraphQLException("Заявки на event доступны только представителям организаций");
+
+        var userId = equipmentService.GetRequiredUserId(user);
+        return eventService.CreateEventAsync(input, userId);
+    }
 
     [Authorize(Roles = ["Admin"])]
     public Task<Event> UpdateEvent(int id, CreateEventInput input, EventService eventService) =>

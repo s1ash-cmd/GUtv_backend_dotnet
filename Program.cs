@@ -48,6 +48,7 @@ builder.Services.AddScoped<EquipmentService>();
 builder.Services.AddScoped<BookingService>();
 builder.Services.AddScoped<EventService>();
 builder.Services.AddScoped<CartService>();
+builder.Services.AddScoped<BotSecurityService>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");

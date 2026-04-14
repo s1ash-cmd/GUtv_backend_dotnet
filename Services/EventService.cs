@@ -8,7 +8,7 @@ namespace GUtv_backend_dotnet.Services;
 
 public class EventService(AppDbContext db)
 {
-    public async Task<Event> CreateEventAsync(CreateEventInput input)
+    public async Task<Event> CreateEventAsync(CreateEventInput input, int userId)
     {
         ValidateEventInput(input);
 
@@ -18,6 +18,7 @@ public class EventService(AppDbContext db)
 
         var entity = new Event
         {
+            UserId = userId,
             Client = input.Client.Trim(),
             Reason = input.Reason.Trim(),
             CreationTime = DateTime.UtcNow,
@@ -45,6 +46,16 @@ public class EventService(AppDbContext db)
             ?? throw new GraphQLException($"Событие с ID {id} не найдено");
     }
 
+    public async Task<Event> GetEventByIdForUserAsync(int id, int userId, bool isAdmin)
+    {
+        var entity = await GetEventByIdAsync(id);
+
+        if (!isAdmin && entity.UserId != userId)
+            throw new GraphQLException("У вас нет доступа к этой заявке");
+
+        return entity;
+    }
+
     public async Task<List<Event>> GetEventsByStatusAsync(BookingStatus status)
     {
         var events = await db.Events.AsNoTracking().Where(e => e.Status == status).ToListAsync();
@@ -52,6 +63,13 @@ public class EventService(AppDbContext db)
             throw new GraphQLException($"Нет событий со статусом {status}");
         return events;
     }
+
+    public async Task<List<Event>> GetEventsByUserAsync(int userId) =>
+        await db.Events
+            .AsNoTracking()
+            .Where(e => e.UserId == userId)
+            .OrderByDescending(e => e.CreationTime)
+            .ToListAsync();
 
     public async Task<Event> UpdateEventAsync(int id, CreateEventInput input)
     {

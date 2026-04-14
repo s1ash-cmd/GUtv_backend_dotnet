@@ -13,6 +13,9 @@ public class BookingService(AppDbContext db)
         var user = await db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
+        if (user.Role == UserRole.Organization)
+            throw new GraphQLException("Представителям организаций недоступно бронирование оборудования");
+
         if (input.StartTime >= input.EndTime)
             throw new GraphQLException("Дата начала должна быть раньше даты окончания");
 
@@ -39,22 +42,25 @@ public class BookingService(AppDbContext db)
         foreach (var requestedItem in input.Equipment)
         {
             if (requestedItem.Quantity <= 0)
-                throw new GraphQLException($"Количество для модели '{requestedItem.ModelName}' должно быть больше 0");
+                throw new GraphQLException($"Количество для модели {requestedItem.ModelName} должно быть больше 0");
 
             var eqModel = await db.EqModels
                 .FirstOrDefaultAsync(m => m.Name == requestedItem.ModelName);
 
             if (eqModel == null)
-                throw new GraphQLException($"Модель оборудования '{requestedItem.ModelName}' не найдена");
+                throw new GraphQLException($"Модель оборудования {requestedItem.ModelName} не найдена");
 
-            switch (eqModel.Access)
+            if (!HasEquipmentAccess(user.Role, eqModel.Access))
             {
-                case EqAccess.Ronin when user.Role < UserRole.Ronin:
-                    throw new GraphQLException(
-                        $"У вас нет доступа к оборудованию '{requestedItem.ModelName}'. Требуется разрешение Ronin");
-                case EqAccess.Osnova when user.Role < UserRole.Osnova:
-                    throw new GraphQLException(
-                        $"У вас нет доступа к оборудованию '{requestedItem.ModelName}'. Требуется быть в основе");
+                throw eqModel.Access switch
+                {
+                    EqAccess.Ronin => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin"),
+                    EqAccess.Osnova => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется быть в основе"),
+                    _ => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}")
+                };
             }
 
             var availableItems = await GetAvailableItemsAsync(
@@ -66,7 +72,7 @@ public class BookingService(AppDbContext db)
             if (availableItems.Count < requestedItem.Quantity)
             {
                 throw new GraphQLException(
-                    $"Недостаточно доступного оборудования модели '{requestedItem.ModelName}'. " +
+                    $"Недостаточно доступного оборудования модели {requestedItem.ModelName}. " +
                     $"Доступно: {availableItems.Count}, требуется: {requestedItem.Quantity}");
             }
 
@@ -87,10 +93,13 @@ public class BookingService(AppDbContext db)
         return await GetBookingEntityByIdAsync(booking.Id);
     }
 
-    public async Task<Booking> GetBookingByIdAsync(int id)
+    public async Task<Booking> GetBookingByIdAsync(int id, int currentUserId, bool isAdmin)
     {
         var booking = await FindBookingWithIncludes().FirstOrDefaultAsync(b => b.Id == id)
             ?? throw new GraphQLException($"Бронирование с ID {id} не найдено");
+
+        if (!isAdmin && booking.UserId != currentUserId)
+            throw new GraphQLException("Вы не можете просматривать чужое бронирование");
 
         if (booking.BookingItems.Count == 0)
             throw new GraphQLException("У бронирования нет связанных элементов оборудования");
@@ -165,6 +174,9 @@ public class BookingService(AppDbContext db)
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
+        if (booking.Status != BookingStatus.Pending)
+            throw new GraphQLException("Бронирование недоступно для обработки");
+
         booking.Status = BookingStatus.Approved;
         if (!string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
@@ -177,6 +189,9 @@ public class BookingService(AppDbContext db)
     {
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
+
+        if (booking.Status != BookingStatus.Approved)
+            throw new GraphQLException("Завершить можно только одобренное бронирование");
 
         booking.Status = BookingStatus.Completed;
         await db.SaveChangesAsync();
@@ -195,6 +210,9 @@ public class BookingService(AppDbContext db)
 
         if (booking.Status == BookingStatus.Cancelled)
             throw new GraphQLException("Это бронирование уже отменено");
+
+        if (isAdmin && booking.Status != BookingStatus.Pending)
+            throw new GraphQLException("Бронирование недоступно для обработки");
 
         booking.Status = BookingStatus.Cancelled;
 
@@ -244,6 +262,17 @@ public class BookingService(AppDbContext db)
     private static string SerializeWarnings(Dictionary<string, object> warnings)
     {
         return JsonSerializer.Serialize(warnings);
+    }
+
+    private static bool HasEquipmentAccess(UserRole role, EqAccess access)
+    {
+        return access switch
+        {
+            EqAccess.User => role is UserRole.User or UserRole.Osnova or UserRole.Ronin or UserRole.Admin,
+            EqAccess.Osnova => role is UserRole.Osnova or UserRole.Ronin or UserRole.Admin,
+            EqAccess.Ronin => role is UserRole.Ronin or UserRole.Admin,
+            _ => false
+        };
     }
 }
 

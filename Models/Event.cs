@@ -4,6 +4,10 @@ public class Event
 {
     public int Id { get; set; }
 
+    public int? UserId { get; set; }
+    [GraphQLIgnore]
+    public User? User { get; set; }
+
     public string Client { get; set; } = null!;
 
     public string Reason { get; set; } = "";

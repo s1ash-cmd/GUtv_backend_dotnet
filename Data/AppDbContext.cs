@@ -55,6 +55,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey<Cart>(c => c.UserId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        modelBuilder.Entity<Event>()
+            .HasOne(e => e.User)
+            .WithMany(u => u.Events)
+            .HasForeignKey(e => e.UserId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         modelBuilder.Entity<CartItem>()
             .HasOne(ci => ci.Cart)
             .WithMany(c => c.Items)

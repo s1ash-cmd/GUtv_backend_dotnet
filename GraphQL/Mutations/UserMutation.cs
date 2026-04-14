@@ -13,7 +13,7 @@ public class UserMutation
         UserService userService,
         AuthService authService)
     {
-        var role = input.Ronin ? UserRole.Ronin : UserRole.User;
+        var role = input.IsOrganization ? UserRole.Organization : UserRole.User;
 
         var user = await userService.CreateUser(
             input.Login,
@@ -80,15 +80,31 @@ public class UserMutation
     public Task<User> SetUserRole(
         int userId,
         UserRole role,
-        UserService userService) =>
-        userService.SetRole(userId, role);
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService)
+    {
+        var currentUserId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        if (currentUserId == userId)
+            throw new GraphQLException("Нельзя изменять собственную роль через админскую операцию");
+
+        return userService.SetRole(userId, role);
+    }
 
     [Authorize(Roles = ["Admin"])]
     public Task<User> SetUserBanned(
         int userId,
         bool banned,
-        UserService userService) =>
-        userService.SetBanned(userId, banned);
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService)
+    {
+        var currentUserId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        if (currentUserId == userId)
+            throw new GraphQLException("Нельзя изменять собственный статус через админскую операцию");
+
+        return userService.SetBanned(userId, banned);
+    }
 
     [Authorize]
     public async Task<TelegramLinkPayload> GenerateMyTelegramLinkCode(
@@ -111,21 +127,37 @@ public class UserMutation
         return await userService.UnlinkTelegram(userId);
     }
 
-    [Authorize(Roles = ["Admin"])]
     public Task<User> LinkTelegramByCode(
+        string botToken,
         string code,
         long chatId,
         string? username,
-        UserService userService) =>
-        userService.LinkTelegramByCode(code, chatId, username);
+        BotSecurityService botSecurityService,
+        UserService userService)
+    {
+        botSecurityService.EnsureAuthorized(botToken);
+        return userService.LinkTelegramByCode(code, chatId, username);
+    }
+
+    public async Task<bool> UpdateTelegramUsername(
+        string botToken,
+        long chatId,
+        string? username,
+        BotSecurityService botSecurityService,
+        UserService userService)
+    {
+        botSecurityService.EnsureAuthorized(botToken);
+        await userService.UpdateTelegramUsernameAsync(chatId, username);
+        return true;
+    }
 }
 
 public record RegisterInput(
     string Login,
     string Password,
     string Name,
-    bool Ronin,
-    int JoinYear
+    bool IsOrganization,
+    int? JoinYear
 );
 
 public record LoginInput(

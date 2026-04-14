@@ -17,6 +17,12 @@ public class UserService
         string login, string password, string name,
         UserRole role = UserRole.User, int? joinYear = null)
     {
+        if (string.IsNullOrWhiteSpace(password) || password.Length < 8)
+            throw new GraphQLException("Пароль обязателен и должен быть не короче 8 символов");
+
+        if (role != UserRole.Organization && !joinYear.HasValue)
+            throw new GraphQLException("Для участников GUtv необходимо указать год вступления");
+
         if (await _db.Users.AnyAsync(u => EF.Functions.ILike(u.Login, login)))
             throw new GraphQLException("Пользователь с таким логином уже существует");
 
@@ -26,7 +32,9 @@ public class UserService
             PasswordHash = HashPassword(password),
             Name = name,
             Role = role,
-            JoinYear = joinYear ?? DateTime.UtcNow.Year
+            JoinYear = role == UserRole.Organization
+                ? 0
+                : joinYear ?? DateTime.UtcNow.Year
         };
 
         if (!await _db.Users.AnyAsync())
@@ -63,6 +71,11 @@ public class UserService
         return await _db.Users.FirstOrDefaultAsync(u =>
             u.RefreshToken == refreshToken &&
             u.RefreshTokenExpiryTime > DateTime.UtcNow);
+    }
+
+    public async Task<User?> GetByTelegramChatIdAsync(long chatId)
+    {
+        return await _db.Users.FirstOrDefaultAsync(u => u.TelegramChatId == chatId);
     }
 
     public async Task<User> EnsureRoleUpgradeOnAuthorizationAsync(User user)
@@ -149,6 +162,23 @@ public class UserService
 
         await _db.SaveChangesAsync();
         return true;
+    }
+
+    public async Task UpdateTelegramUsernameAsync(long chatId, string? newUsername)
+    {
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.TelegramChatId == chatId);
+
+        if (user != null && user.TelegramUsername != newUsername)
+        {
+            user.TelegramUsername = newUsername;
+            await _db.SaveChangesAsync();
+        }
+    }
+
+    public string GenerateTelegramDeepLink(string code, string botUsername)
+    {
+        botUsername = botUsername.TrimStart('@');
+        return $"https://t.me/{botUsername}?start=LINK_{code}";
     }
 
     private static string HashPassword(string password)

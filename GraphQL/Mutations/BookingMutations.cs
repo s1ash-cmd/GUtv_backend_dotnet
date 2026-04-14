@@ -60,4 +60,44 @@ public class BookingMutations
         var isAdmin = httpUser?.IsInRole("Admin") ?? false;
         return bookingService.CancelBookingAsync(id, userId, isAdmin, adminComment);
     }
+
+    public async Task<Booking> ApproveBookingByTelegram(
+        string botToken,
+        long chatId,
+        int bookingId,
+        string? adminComment,
+        BotSecurityService botSecurityService,
+        UserService userService,
+        BookingService bookingService)
+    {
+        botSecurityService.EnsureAuthorized(botToken);
+
+        var admin = await userService.GetByTelegramChatIdAsync(chatId)
+            ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
+
+        if (admin.Role != UserRole.Admin)
+            throw new GraphQLException("У вас нет прав для этого действия");
+
+        return await bookingService.ApproveBookingAsync(bookingId, adminComment);
+    }
+
+    public async Task<Booking> RejectBookingByTelegram(
+        string botToken,
+        long chatId,
+        int bookingId,
+        string? adminComment,
+        BotSecurityService botSecurityService,
+        UserService userService,
+        BookingService bookingService)
+    {
+        botSecurityService.EnsureAuthorized(botToken);
+
+        var admin = await userService.GetByTelegramChatIdAsync(chatId)
+            ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
+
+        if (admin.Role != UserRole.Admin)
+            throw new GraphQLException("У вас нет прав для этого действия");
+
+        return await bookingService.CancelBookingAsync(bookingId, admin.Id, true, adminComment);
+    }
 }
