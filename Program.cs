@@ -5,9 +5,11 @@ using GUtv_backend_dotnet.GraphQL.Mutations;
 using GUtv_backend_dotnet.GraphQL.Queries;
 using GUtv_backend_dotnet.GraphQL.Types;
 using GUtv_backend_dotnet.Services;
+using GUtv_backend_dotnet.Services.Telegram;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -70,6 +72,11 @@ var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");
 if (string.IsNullOrWhiteSpace(botToken))
     throw new InvalidOperationException("Bot Token is not configured");
+
+builder.Services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(botToken));
+builder.Services.AddSingleton<TelegramUpdateHandler>();
+builder.Services.AddScoped<TelegramNotificationService>();
+builder.Services.AddHostedService<TelegramBotService>();
 
 builder.Services
     .AddGraphQLServer()

@@ -1,12 +1,13 @@
 using System.Text.Json;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.Models;
+using GUtv_backend_dotnet.Services.Telegram;
 using HotChocolate;
 using Microsoft.EntityFrameworkCore;
 
 namespace GUtv_backend_dotnet.Services;
 
-public class BookingService(AppDbContext db)
+public class BookingService(AppDbContext db, TelegramNotificationService telegramNotificationService)
 {
     public async Task<Booking> CreateBookingAsync(CreateBookingInput input, int userId)
     {
@@ -87,7 +88,10 @@ public class BookingService(AppDbContext db)
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
 
-        return await GetBookingEntityByIdAsync(booking.Id);
+        var createdBooking = await GetBookingEntityByIdAsync(booking.Id);
+        await telegramNotificationService.NotifyAdminsNewBooking(createdBooking);
+
+        return createdBooking;
     }
 
     public async Task<Booking> GetBookingByIdAsync(int id, int currentUserId, bool isAdmin)
@@ -174,12 +178,16 @@ public class BookingService(AppDbContext db)
         if (booking.Status != BookingStatus.Pending)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
+        var oldStatus = booking.Status;
         booking.Status = BookingStatus.Approved;
         if (!string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();
-        return await GetBookingEntityByIdAsync(bookingId);
+        var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
+        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+
+        return updatedBooking;
     }
 
     public async Task<Booking> CompleteBookingAsync(int bookingId)
@@ -190,9 +198,13 @@ public class BookingService(AppDbContext db)
         if (booking.Status != BookingStatus.Approved)
             throw new GraphQLException("Завершить можно только одобренное бронирование");
 
+        var oldStatus = booking.Status;
         booking.Status = BookingStatus.Completed;
         await db.SaveChangesAsync();
-        return await GetBookingEntityByIdAsync(bookingId);
+        var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
+        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+
+        return updatedBooking;
     }
 
     public async Task<Booking> CancelBookingAsync(int bookingId, int userId, bool isAdmin, string? adminComment = null)
@@ -218,13 +230,17 @@ public class BookingService(AppDbContext db)
         if (!canCancelAsOwner && !canCancelAsAdmin)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
+        var oldStatus = booking.Status;
         booking.Status = BookingStatus.Cancelled;
 
         if (isAdmin && !isOwner && !string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();
-        return await GetBookingEntityByIdAsync(bookingId);
+        var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
+        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+
+        return updatedBooking;
     }
 
     public string GetWarningsJson(Booking booking)
