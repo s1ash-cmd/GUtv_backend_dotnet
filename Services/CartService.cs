@@ -9,8 +9,6 @@ public class CartService(AppDbContext db, BookingService bookingService)
 {
     public async Task<Cart> GetOrCreateCartAsync(int userId)
     {
-        await EnsureEquipmentBookingAllowedAsync(userId);
-
         var cart = await db.Carts
             .Include(c => c.Items)
             .ThenInclude(i => i.EqModel)
@@ -144,8 +142,6 @@ public class CartService(AppDbContext db, BookingService bookingService)
 
     private async Task<Cart> GetCartTrackedAsync(int userId)
     {
-        await EnsureEquipmentBookingAllowedAsync(userId);
-
         var cart = await db.Carts
             .Include(c => c.Items)
             .ThenInclude(i => i.EqModel)
@@ -158,21 +154,6 @@ public class CartService(AppDbContext db, BookingService bookingService)
         db.Carts.Add(cart);
         await db.SaveChangesAsync();
         return cart;
-    }
-
-    private async Task EnsureUserExistsAsync(int userId)
-    {
-        if (!await db.Users.AnyAsync(u => u.Id == userId))
-            throw new GraphQLException("Пользователь не найден");
-    }
-
-    private async Task EnsureEquipmentBookingAllowedAsync(int userId)
-    {
-        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId)
-            ?? throw new GraphQLException("Пользователь не найден");
-
-        if (user.Role == UserRole.Organization)
-            throw new GraphQLException("Представителям организаций недоступно бронирование оборудования");
     }
 }
 

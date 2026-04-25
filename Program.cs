@@ -16,6 +16,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException("JWT Key is not set");
+if (string.IsNullOrWhiteSpace(jwtKey))
+    throw new InvalidOperationException("JWT Key is not set");
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -38,20 +40,36 @@ builder.Services
 builder.Services.AddAuthorization();
 builder.Services.AddHttpContextAccessor();
 
+var allowedOrigins = builder.Configuration
+    .GetSection("Cors:AllowedOrigins")
+    .Get<string[]>() ?? [];
+
 builder.Services.AddCors(options =>
-    options.AddPolicy("AllowAll", policy =>
-        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    options.AddPolicy("ConfiguredOrigins", policy =>
+    {
+        if (builder.Environment.IsDevelopment() && allowedOrigins.Length == 0)
+        {
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+            return;
+        }
+
+        if (allowedOrigins.Length == 0)
+            throw new InvalidOperationException("Cors:AllowedOrigins must be configured outside Development");
+
+        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+    }));
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<EquipmentService>();
 builder.Services.AddScoped<BookingService>();
-builder.Services.AddScoped<EventService>();
 builder.Services.AddScoped<CartService>();
 builder.Services.AddScoped<BotSecurityService>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");
+if (string.IsNullOrWhiteSpace(botToken))
+    throw new InvalidOperationException("Bot Token is not configured");
 
 builder.Services
     .AddGraphQLServer()
@@ -69,8 +87,6 @@ builder.Services
     .AddTypeExtension<EquipmentMutations>()
     .AddTypeExtension<BookingQueries>()
     .AddTypeExtension<BookingMutations>()
-    .AddTypeExtension<EventQueries>()
-    .AddTypeExtension<EventMutations>()
     .AddTypeExtension<CartQueries>()
     .AddTypeExtension<CartMutations>()
     .AddSorting()
@@ -78,7 +94,7 @@ builder.Services
 
 var app = builder.Build();
 
-app.UseCors("AllowAll");
+app.UseCors("ConfiguredOrigins");
 app.UseAuthentication();
 app.UseAuthorization();
 

@@ -3,6 +3,7 @@ using System;
 using GUtv_backend_dotnet.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace GUtv_backend_dotnet.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260415001000_RepairEventOwnerColumns")]
+    partial class RepairEventOwnerColumns
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -244,6 +247,54 @@ namespace GUtv_backend_dotnet.Migrations
                     b.ToTable("EqPhotos");
                 });
 
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.Event", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AdminComment")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Client")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Comment")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreationTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("EndTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("StartTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("WarningsJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("Events");
+                });
+
             modelBuilder.Entity("GUtv_backend_dotnet.Models.User", b =>
                 {
                     b.Property<int>("Id")
@@ -378,6 +429,16 @@ namespace GUtv_backend_dotnet.Migrations
                     b.Navigation("EqModel");
                 });
 
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.Event", b =>
+                {
+                    b.HasOne("GUtv_backend_dotnet.Models.User", "User")
+                        .WithMany("Events")
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("User");
+                });
+
             modelBuilder.Entity("GUtv_backend_dotnet.Models.Booking", b =>
                 {
                     b.Navigation("BookingItems");
@@ -407,6 +468,8 @@ namespace GUtv_backend_dotnet.Migrations
                     b.Navigation("Bookings");
 
                     b.Navigation("Cart");
+
+                    b.Navigation("Events");
                 });
 #pragma warning restore 612, 618
         }

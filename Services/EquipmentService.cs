@@ -97,7 +97,6 @@ public class EquipmentService(AppDbContext db)
             UserRole.Osnova => query.Where(m =>
                 m.Access == EqAccess.User || m.Access == EqAccess.Osnova),
             UserRole.User => query.Where(m => m.Access == EqAccess.User),
-            UserRole.Organization => query.Where(_ => false),
             _ => throw new GraphQLException("Неизвестная роль пользователя")
         };
 

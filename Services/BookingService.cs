@@ -13,9 +13,6 @@ public class BookingService(AppDbContext db)
         var user = await db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
-        if (user.Role == UserRole.Organization)
-            throw new GraphQLException("Представителям организаций недоступно бронирование оборудования");
-
         if (input.StartTime >= input.EndTime)
             throw new GraphQLException("Дата начала должна быть раньше даты окончания");
 
@@ -205,18 +202,25 @@ public class BookingService(AppDbContext db)
             .FirstOrDefaultAsync(b => b.Id == bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
-        if (!isAdmin && booking.UserId != userId)
+        var isOwner = booking.UserId == userId;
+
+        if (!isAdmin && !isOwner)
             throw new GraphQLException("Вы не можете отменить чужое бронирование");
 
         if (booking.Status == BookingStatus.Cancelled)
             throw new GraphQLException("Это бронирование уже отменено");
 
-        if (isAdmin && booking.Status != BookingStatus.Pending)
+        var canCancelAsOwner =
+            isOwner &&
+            (booking.Status == BookingStatus.Pending || booking.Status == BookingStatus.Approved);
+        var canCancelAsAdmin = isAdmin && booking.Status == BookingStatus.Pending;
+
+        if (!canCancelAsOwner && !canCancelAsAdmin)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
         booking.Status = BookingStatus.Cancelled;
 
-        if (isAdmin && !string.IsNullOrWhiteSpace(adminComment))
+        if (isAdmin && !isOwner && !string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();

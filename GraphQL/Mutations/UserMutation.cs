@@ -13,7 +13,7 @@ public class UserMutation
         UserService userService,
         AuthService authService)
     {
-        var role = input.IsOrganization ? UserRole.Organization : UserRole.User;
+        var role = UserRole.User;
 
         var user = await userService.CreateUser(
             input.Login,

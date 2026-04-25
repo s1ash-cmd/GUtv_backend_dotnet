@@ -24,6 +24,5 @@ public class User
     public DateTime? RefreshTokenExpiryTime { get; set; }
 
     public ICollection<Booking> Bookings { get; set; } = [];
-    public ICollection<Event> Events { get; set; } = [];
     public Cart? Cart { get; set; }
 }

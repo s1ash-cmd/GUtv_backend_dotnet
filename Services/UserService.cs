@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.Models;
 using Microsoft.EntityFrameworkCore;
@@ -17,11 +18,17 @@ public class UserService
         string login, string password, string name,
         UserRole role = UserRole.User, int? joinYear = null)
     {
+        if (string.IsNullOrWhiteSpace(login))
+            throw new GraphQLException("Логин обязателен");
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new GraphQLException("Имя обязательно");
+
         if (string.IsNullOrWhiteSpace(password) || password.Length < 8)
             throw new GraphQLException("Пароль обязателен и должен быть не короче 8 символов");
 
-        if (role != UserRole.Organization && !joinYear.HasValue)
-            throw new GraphQLException("Для участников GUtv необходимо указать год вступления");
+        login = login.Trim();
+        name = name.Trim();
 
         if (await _db.Users.AnyAsync(u => EF.Functions.ILike(u.Login, login)))
             throw new GraphQLException("Пользователь с таким логином уже существует");
@@ -32,9 +39,7 @@ public class UserService
             PasswordHash = HashPassword(password),
             Name = name,
             Role = role,
-            JoinYear = role == UserRole.Organization
-                ? 0
-                : joinYear ?? DateTime.UtcNow.Year
+            JoinYear = joinYear ?? DateTime.UtcNow.Year
         };
 
         if (!await _db.Users.AnyAsync())
@@ -119,7 +124,7 @@ public class UserService
         if (user.TelegramChatId.HasValue)
             throw new GraphQLException("Telegram уже привязан");
 
-        var code = Random.Shared.Next(100000, 999999).ToString();
+        var code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
         user.TelegramLinkCode = code;
         user.TelegramLinkCodeExpiry = DateTime.UtcNow.AddMinutes(10);
 

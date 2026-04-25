@@ -10,7 +10,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<EqItem> EqItems => Set<EqItem>();
     public DbSet<Booking> Bookings => Set<Booking>();
     public DbSet<BookingItem> BookingItems => Set<BookingItem>();
-    public DbSet<Event> Events => Set<Event>();
     public DbSet<EqPhoto> EqPhotos => Set<EqPhoto>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartItem> CartItems => Set<CartItem>();
@@ -54,12 +53,6 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .WithOne(u => u.Cart)
             .HasForeignKey<Cart>(c => c.UserId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        modelBuilder.Entity<Event>()
-            .HasOne(e => e.User)
-            .WithMany(u => u.Events)
-            .HasForeignKey(e => e.UserId)
-            .OnDelete(DeleteBehavior.SetNull);
 
         modelBuilder.Entity<CartItem>()
             .HasOne(ci => ci.Cart)
