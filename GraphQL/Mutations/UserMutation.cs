@@ -156,7 +156,6 @@ public record RegisterInput(
     string Login,
     string Password,
     string Name,
-    bool IsOrganization,
     int? JoinYear
 );
 
