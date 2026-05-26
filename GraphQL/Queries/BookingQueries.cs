@@ -30,6 +30,13 @@ public class BookingQueries
         bookingService.GetAllBookingsAsync();
 
     [Authorize]
+    public Task<List<Booking>> GetCalendarBookings(
+        DateTime? start,
+        DateTime? end,
+        BookingService bookingService) =>
+        bookingService.GetCalendarBookingsAsync(start, end);
+
+    [Authorize]
     public Task<List<Booking>> GetMyBookings(
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,

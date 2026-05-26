@@ -69,9 +69,13 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
             if (availableItems.Count < requestedItem.Quantity)
             {
+                var conflicts = await GetBookingConflictsAsync(eqModel.Id, input.StartTime, input.EndTime);
                 throw new GraphQLException(
-                    $"Недостаточно доступного оборудования модели {requestedItem.ModelName}. " +
-                    $"Доступно: {availableItems.Count}, требуется: {requestedItem.Quantity}");
+                    FormatConflictMessage(
+                        requestedItem.ModelName,
+                        availableItems.Count,
+                        requestedItem.Quantity,
+                        conflicts));
             }
 
             bookingItems.AddRange(availableItems.Select(eqItem => new BookingItem
@@ -123,6 +127,19 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     public async Task<List<Booking>> GetAllBookingsAsync()
     {
         return await FindBookingWithIncludes().ToListAsync();
+    }
+
+    public async Task<List<Booking>> GetCalendarBookingsAsync(DateTime? start = null, DateTime? end = null)
+    {
+        var query = FindBookingWithIncludes()
+            .Where(b => b.Status == BookingStatus.Pending || b.Status == BookingStatus.Approved);
+
+        if (start.HasValue && end.HasValue)
+            query = query.Where(b => b.StartTime < end.Value && b.EndTime > start.Value);
+
+        return await query
+            .OrderBy(b => b.StartTime)
+            .ToListAsync();
     }
 
     public async Task<List<Booking>> GetBookingsByEquipmentItemAsync(int eqItemId)
@@ -262,6 +279,52 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             .ToListAsync();
 
         return items.Take(requiredCount).ToList();
+    }
+
+    private async Task<List<BookingItem>> GetBookingConflictsAsync(int eqModelId, DateTime start, DateTime end)
+    {
+        return await db.BookingItems
+            .AsNoTracking()
+            .Include(bi => bi.Booking)
+            .ThenInclude(b => b.User)
+            .Include(bi => bi.EqItem)
+            .ThenInclude(i => i.EqModel)
+            .Where(bi => bi.EqItem.EqModelId == eqModelId)
+            .Where(bi =>
+                (bi.Booking.Status == BookingStatus.Pending ||
+                 bi.Booking.Status == BookingStatus.Approved) &&
+                start < bi.EndDate && end > bi.StartDate)
+            .OrderBy(bi => bi.StartDate)
+            .ToListAsync();
+    }
+
+    private static string FormatConflictMessage(
+        string modelName,
+        int availableCount,
+        int requiredCount,
+        IReadOnlyList<BookingItem> conflicts)
+    {
+        var baseMessage =
+            $"Недостаточно доступного оборудования модели {modelName}. Доступно: {availableCount}, требуется: {requiredCount}";
+
+        if (conflicts.Count == 0)
+            return baseMessage;
+
+        var details = conflicts
+            .Take(5)
+            .Select(conflict =>
+            {
+                var user = conflict.Booking.User;
+                var contact = string.IsNullOrWhiteSpace(user.TelegramUsername)
+                    ? $"@{user.Login}"
+                    : $"@{user.TelegramUsername}";
+
+                return
+                    $"{user.Name} ({contact}) — {conflict.StartDate:dd.MM HH:mm}-{conflict.EndDate:dd.MM HH:mm}, инв. {conflict.EqItem.InventoryNumber}";
+            });
+
+        var rest = conflicts.Count > 5 ? $" Еще пересечений: {conflicts.Count - 5}." : string.Empty;
+        return $"{baseMessage}. В выбранный период занято: {string.Join("; ", details)}.{rest}";
     }
 
     private IQueryable<Booking> FindBookingWithIncludes()
