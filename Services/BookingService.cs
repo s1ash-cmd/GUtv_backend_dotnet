@@ -305,26 +305,59 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         IReadOnlyList<BookingItem> conflicts)
     {
         var baseMessage =
-            $"Недостаточно доступного оборудования модели {modelName}. Доступно: {availableCount}, требуется: {requiredCount}";
+            $"Недостаточно {modelName}: свободно {availableCount}, нужно {requiredCount}.";
 
         if (conflicts.Count == 0)
             return baseMessage;
 
-        var details = conflicts
-            .Take(5)
-            .Select(conflict =>
+        var groupedConflicts = conflicts
+            .GroupBy(conflict => new
             {
-                var user = conflict.Booking.User;
-                var contact = string.IsNullOrWhiteSpace(user.TelegramUsername)
-                    ? $"@{user.Login}"
-                    : $"@{user.TelegramUsername}";
+                conflict.BookingId,
+                conflict.StartDate,
+                conflict.EndDate,
+                conflict.Booking.User.Name,
+                conflict.Booking.User.Login,
+                conflict.Booking.User.TelegramUsername
+            })
+            .OrderBy(group => group.Key.StartDate)
+            .ThenBy(group => group.Key.Name)
+            .ToList();
 
-                return
-                    $"{user.Name} ({contact}) — {conflict.StartDate:dd.MM HH:mm}-{conflict.EndDate:dd.MM HH:mm}, инв. {conflict.EqItem.InventoryNumber}";
+        var details = groupedConflicts
+            .Take(4)
+            .Select(group =>
+            {
+                var contact = string.IsNullOrWhiteSpace(group.Key.TelegramUsername)
+                    ? $"@{group.Key.Login}"
+                    : $"@{group.Key.TelegramUsername}";
+                var inventoryNumbers = group
+                    .Select(conflict => conflict.EqItem.InventoryNumber)
+                    .Distinct()
+                    .Order()
+                    .ToList();
+                var countText = inventoryNumbers.Count == 1
+                    ? "1 экземпляр"
+                    : $"{inventoryNumbers.Count} шт.";
+
+                return $"{group.Key.Name} ({contact}) — {group.Key.StartDate:dd.MM HH:mm}–{group.Key.EndDate:dd.MM HH:mm}: {countText}, {FormatInventoryNumbers(inventoryNumbers)}";
             });
 
-        var rest = conflicts.Count > 5 ? $" Еще пересечений: {conflicts.Count - 5}." : string.Empty;
-        return $"{baseMessage}. В выбранный период занято: {string.Join("; ", details)}.{rest}";
+        var rest = groupedConflicts.Count > 4
+            ? $" Еще бронирований: {groupedConflicts.Count - 4}."
+            : string.Empty;
+
+        return $"{baseMessage} Уже занято: {string.Join("; ", details)}.{rest}";
+
+        static string FormatInventoryNumbers(IReadOnlyList<string> inventoryNumbers)
+        {
+            const int visibleCount = 4;
+            var visible = inventoryNumbers.Take(visibleCount).ToList();
+            var rest = inventoryNumbers.Count - visible.Count;
+            var suffix = rest > 0 ? $" и еще {rest}" : string.Empty;
+
+            return $"инв. {string.Join(", ", visible)}{suffix}";
+        }
     }
 
     private IQueryable<Booking> FindBookingWithIncludes()

@@ -150,6 +150,34 @@ public class EquipmentService(AppDbContext db)
         return model;
     }
 
+    public async Task<EqModel> UpdateModelPropertiesAsync(int id, UpdateEqModelPropertiesInput input)
+    {
+        if (id <= 0)
+            throw new GraphQLException("ID должен быть положительным");
+
+        if (string.IsNullOrWhiteSpace(input.Name))
+            throw new GraphQLException("Название не может быть пустым");
+
+        var model = await db.EqModels.FindAsync(id)
+            ?? throw new GraphQLException($"Модель оборудования с ID {id} не найдена");
+
+        var normalizedName = input.Name.Trim();
+        var nameExists = await db.EqModels.AnyAsync(m =>
+            m.Id != id && EF.Functions.ILike(m.Name, normalizedName));
+        if (nameExists)
+            throw new GraphQLException("Оборудование с таким названием уже существует");
+
+        model.Name = normalizedName;
+        model.Description = input.Description?.Trim() ?? string.Empty;
+
+        await db.SaveChangesAsync();
+
+        return await db.EqModels
+            .AsNoTracking()
+            .Include(m => m.Photos.OrderBy(p => p.Order))
+            .FirstAsync(m => m.Id == id);
+    }
+
     public async Task<bool> DeleteModelAsync(int id)
     {
         var model = await db.EqModels.FindAsync(id)
@@ -175,19 +203,14 @@ public class EquipmentService(AppDbContext db)
                 "SELECT 1 FROM \"EqModels\" WHERE \"Id\" = {0} FOR UPDATE",
                 eqModelId);
 
-            var lastItemNumber = await db.EqItems
+            var itemNumbers = await db.EqItems
                 .Where(i => i.EqModelId == eqModelId)
-                .OrderByDescending(i => i.Id)
                 .Select(i => i.InventoryNumber)
-                .FirstOrDefaultAsync();
+                .ToListAsync();
 
-            var nextNumber = 1;
-            if (!string.IsNullOrWhiteSpace(lastItemNumber))
-            {
-                var parts = lastItemNumber.Split('-');
-                if (parts.Length >= 3 && int.TryParse(parts[2], out var lastNumber))
-                    nextNumber = lastNumber + 1;
-            }
+            var nextNumber = itemNumbers.Count == 0
+                ? 1
+                : itemNumbers.Max(GetInventorySequence) + 1;
 
             var item = new EqItem
             {
@@ -289,12 +312,43 @@ public class EquipmentService(AppDbContext db)
 
     public async Task<bool> DeleteItemAsync(int id)
     {
-        var item = await db.EqItems.FindAsync(id)
-            ?? throw new GraphQLException($"Экземпляр оборудования с ID {id} не найден");
+        await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);
 
-        db.EqItems.Remove(item);
-        await db.SaveChangesAsync();
-        return true;
+        try
+        {
+            var item = await db.EqItems
+                .Include(i => i.EqModel)
+                .FirstOrDefaultAsync(i => i.Id == id)
+                ?? throw new GraphQLException($"Экземпляр оборудования с ID {id} не найден");
+
+            await db.Database.ExecuteSqlRawAsync(
+                "SELECT 1 FROM \"EqModels\" WHERE \"Id\" = {0} FOR UPDATE",
+                item.EqModelId);
+
+            var modelItems = await db.EqItems
+                .Where(i => i.EqModelId == item.EqModelId)
+                .Select(i => new { i.Id, i.InventoryNumber })
+                .ToListAsync();
+
+            var lastItem = modelItems
+                .OrderByDescending(i => GetInventorySequence(i.InventoryNumber))
+                .ThenByDescending(i => i.Id)
+                .FirstOrDefault();
+
+            if (lastItem?.Id != item.Id)
+                throw new GraphQLException(
+                    $"Удалять можно только последний экземпляр модели. Сейчас последний: {lastItem?.InventoryNumber ?? "не найден"}");
+
+            db.EqItems.Remove(item);
+            await db.SaveChangesAsync();
+            await transaction.CommitAsync();
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
     }
 
     public int GetRequiredUserId(ClaimsPrincipal? user)
@@ -319,6 +373,14 @@ public class EquipmentService(AppDbContext db)
         return EqAccess.User;
     }
 
+    private static int GetInventorySequence(string inventoryNumber)
+    {
+        var parts = inventoryNumber.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length > 0 && int.TryParse(parts[^1], out var sequence)
+            ? sequence
+            : 0;
+    }
+
     private static string NormalizeJson(string? json)
     {
         return string.IsNullOrWhiteSpace(json) ? "{}" : json.Trim();
@@ -340,6 +402,11 @@ public record CreateEqModelInput(
     EqCategory Category,
     string? AttributesJson,
     bool Osnova = false
+);
+
+public record UpdateEqModelPropertiesInput(
+    string Name,
+    string? Description
 );
 
 public record EqModelWithItemsPayload(

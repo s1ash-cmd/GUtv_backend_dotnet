@@ -21,6 +21,13 @@ public class EquipmentMutations
         equipmentService.UpdateModelAsync(id, input);
 
     [Authorize(Roles = ["Admin"])]
+    public Task<EqModel> UpdateEquipmentModelProperties(
+        int id,
+        UpdateEqModelPropertiesInput input,
+        EquipmentService equipmentService) =>
+        equipmentService.UpdateModelPropertiesAsync(id, input);
+
+    [Authorize(Roles = ["Admin"])]
     public Task<bool> DeleteEquipmentModel(int id, EquipmentService equipmentService) =>
         equipmentService.DeleteModelAsync(id);
 
