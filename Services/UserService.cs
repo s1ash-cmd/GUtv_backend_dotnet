@@ -56,6 +56,11 @@ public class UserService
             .FirstOrDefaultAsync(u => EF.Functions.ILike(u.Login, login));
     }
 
+    public async Task<User?> GetByIdAsync(int id)
+    {
+        return await _db.Users.FindAsync(id);
+    }
+
     public bool VerifyPassword(string password, string passwordHash)
     {
         return BCrypt.Net.BCrypt.Verify(password, passwordHash);

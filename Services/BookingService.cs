@@ -250,7 +250,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Cancelled;
 
-        if (isAdmin && !isOwner && !string.IsNullOrWhiteSpace(adminComment))
+        if (isAdmin && !string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();

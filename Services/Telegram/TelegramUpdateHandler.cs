@@ -205,9 +205,10 @@ public class TelegramUpdateHandler
     private async Task HandleCommentReply(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
     {
         var chatId = message.Chat.Id;
-        if (!_pendingComments.TryRemove(chatId, out var pendingData))
+        if (!_pendingComments.TryGetValue(chatId, out var pendingData))
             return;
 
+        string successMessage;
         try
         {
             using var scope = _serviceProvider.CreateScope();
@@ -219,31 +220,61 @@ public class TelegramUpdateHandler
                 return;
 
             var comment = message.Text == "-" ? null : message.Text;
-            var adminComment = comment is null ? null : $": {comment}";
+            var adminComment = FormatAdminComment(admin, comment);
 
             if (pendingData.Action == "approve")
             {
                 await bookingService.ApproveBookingAsync(pendingData.BookingId, adminComment);
-                await botClient.SendMessage(
-                    chatId,
-                    $"✅ {TelegramText.BookingTitle(pendingData.BookingId)}\nОдобрено",
-                    parseMode: ParseMode.Html,
-                    cancellationToken: cancellationToken);
-                return;
+                successMessage = $"✅ {TelegramText.BookingTitle(pendingData.BookingId)}\nОдобрено";
+            }
+            else
+            {
+                await bookingService.CancelBookingAsync(pendingData.BookingId, admin.Id, true, adminComment);
+                successMessage = $"❌ {TelegramText.BookingTitle(pendingData.BookingId)}\nОтклонено";
             }
 
-            await bookingService.CancelBookingAsync(pendingData.BookingId, admin.Id, true, adminComment);
+            _pendingComments.TryRemove(chatId, out _);
+        }
+        catch (GraphQLException ex)
+        {
+            _pendingComments.TryRemove(chatId, out _);
+            _logger.LogWarning(ex, "Telegram booking comment rejected");
             await botClient.SendMessage(
                 chatId,
-                $"❌ {TelegramText.BookingTitle(pendingData.BookingId)}\nОтклонено",
+                $"❌ {TelegramText.Escape(ex.Message)}",
+                parseMode: ParseMode.Html,
+                cancellationToken: cancellationToken);
+            return;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Telegram booking comment handling failed");
+            await botClient.SendMessage(
+                chatId,
+                "❌ Не удалось обработать бронирование. Попробуйте отправить комментарий еще раз.",
+                cancellationToken: cancellationToken);
+            return;
+        }
+
+        try
+        {
+            await botClient.SendMessage(
+                chatId,
+                successMessage,
                 parseMode: ParseMode.Html,
                 cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Telegram booking comment handling failed");
-            await botClient.SendMessage(chatId, "❌ Произошла ошибка", cancellationToken: cancellationToken);
+            _logger.LogError(ex, "Telegram booking confirmation message failed");
         }
+    }
+
+    private static string? FormatAdminComment(Models.User admin, string? comment)
+    {
+        return string.IsNullOrWhiteSpace(comment)
+            ? null
+            : $"{admin.Name}: {comment.Trim()}";
     }
 
     private async Task UpdateUsername(long chatId, string? username)

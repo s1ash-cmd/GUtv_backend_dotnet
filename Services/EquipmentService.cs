@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.Models;
 using HotChocolate;
@@ -169,6 +170,8 @@ public class EquipmentService(AppDbContext db)
 
         model.Name = normalizedName;
         model.Description = input.Description?.Trim() ?? string.Empty;
+        if (input.AttributesJson is not null)
+            model.AttributesJson = NormalizeJson(input.AttributesJson);
 
         await db.SaveChangesAsync();
 
@@ -383,7 +386,26 @@ public class EquipmentService(AppDbContext db)
 
     private static string NormalizeJson(string? json)
     {
-        return string.IsNullOrWhiteSpace(json) ? "{}" : json.Trim();
+        if (string.IsNullOrWhiteSpace(json))
+            return "{}";
+
+        var trimmed = json.Trim();
+        try
+        {
+            using var document = JsonDocument.Parse(trimmed);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+                throw new GraphQLException("JSON свойства оборудования должны быть объектом");
+
+            return trimmed;
+        }
+        catch (GraphQLException)
+        {
+            throw;
+        }
+        catch (JsonException)
+        {
+            throw new GraphQLException("JSON свойства оборудования заполнены некорректно");
+        }
     }
 
     private static void ValidateModelInput(CreateEqModelInput input)
@@ -406,7 +428,8 @@ public record CreateEqModelInput(
 
 public record UpdateEqModelPropertiesInput(
     string Name,
-    string? Description
+    string? Description,
+    string? AttributesJson
 );
 
 public record EqModelWithItemsPayload(

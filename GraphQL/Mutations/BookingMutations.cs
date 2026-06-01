@@ -30,35 +30,65 @@ public class BookingMutations
     }
 
     [Authorize(Roles = ["Admin"])]
-    public Task<Booking> ApproveBooking(
+    public async Task<Booking> ApproveBooking(
         int bookingId,
         string? adminComment,
-        BookingService bookingService) =>
-        bookingService.ApproveBookingAsync(bookingId, adminComment);
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService,
+        BookingService bookingService)
+    {
+        var admin = await GetCurrentUserAsync(httpContextAccessor, equipmentService, userService);
+        return await bookingService.ApproveBookingAsync(
+            bookingId,
+            FormatAdminComment(admin, adminComment));
+    }
 
     [Authorize(Roles = ["Admin"])]
-    public Task<Booking> RejectBooking(
+    public async Task<Booking> RejectBooking(
         int bookingId,
         string? adminComment,
-        BookingService bookingService) =>
-        bookingService.CancelBookingAsync(bookingId, 0, true, adminComment);
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService,
+        BookingService bookingService)
+    {
+        var admin = await GetCurrentUserAsync(httpContextAccessor, equipmentService, userService);
+        return await bookingService.CancelBookingAsync(
+            bookingId,
+            admin.Id,
+            true,
+            FormatAdminComment(admin, adminComment));
+    }
 
     [Authorize(Roles = ["Admin"])]
     public Task<Booking> CompleteBooking(int id, BookingService bookingService) =>
         bookingService.CompleteBookingAsync(id);
 
     [Authorize]
-    public Task<Booking> CancelBooking(
+    public async Task<Booking> CancelBooking(
         int id,
         string? adminComment,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
+        UserService userService,
         BookingService bookingService)
     {
         var httpUser = httpContextAccessor.HttpContext?.User;
         var userId = equipmentService.GetRequiredUserId(httpUser);
         var isAdmin = httpUser?.IsInRole("Admin") ?? false;
-        return bookingService.CancelBookingAsync(id, userId, isAdmin, adminComment);
+        var admin = isAdmin
+            ? await userService.GetByIdAsync(userId)
+                ?? throw new GraphQLException("Пользователь не найден")
+            : null;
+
+        return await bookingService.CancelBookingAsync(
+            id,
+            userId,
+            isAdmin,
+            isAdmin && admin is not null
+                ? FormatAdminComment(admin, adminComment)
+                : adminComment);
     }
 
     public async Task<Booking> ApproveBookingByTelegram(
@@ -78,7 +108,9 @@ public class BookingMutations
         if (admin.Role != UserRole.Admin)
             throw new GraphQLException("У вас нет прав для этого действия");
 
-        return await bookingService.ApproveBookingAsync(bookingId, adminComment);
+        return await bookingService.ApproveBookingAsync(
+            bookingId,
+            FormatAdminComment(admin, adminComment));
     }
 
     public async Task<Booking> RejectBookingByTelegram(
@@ -98,6 +130,27 @@ public class BookingMutations
         if (admin.Role != UserRole.Admin)
             throw new GraphQLException("У вас нет прав для этого действия");
 
-        return await bookingService.CancelBookingAsync(bookingId, admin.Id, true, adminComment);
+        return await bookingService.CancelBookingAsync(
+            bookingId,
+            admin.Id,
+            true,
+            FormatAdminComment(admin, adminComment));
+    }
+
+    private static string? FormatAdminComment(User admin, string? comment)
+    {
+        return string.IsNullOrWhiteSpace(comment)
+            ? null
+            : $"{admin.Name}: {comment.Trim()}";
+    }
+
+    private static async Task<User> GetCurrentUserAsync(
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return await userService.GetByIdAsync(userId)
+            ?? throw new GraphQLException("Пользователь не найден");
     }
 }

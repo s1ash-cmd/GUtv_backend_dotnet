@@ -10,21 +10,57 @@ public class TelegramBotService(
     IServiceProvider serviceProvider,
     ITelegramBotClient botClient) : BackgroundService
 {
+    private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(20);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var me = await botClient.GetMe(stoppingToken);
-        logger.LogInformation("Telegram bot @{BotUsername} started", me.Username);
-
         var receiverOptions = new ReceiverOptions
         {
             AllowedUpdates = Array.Empty<UpdateType>()
         };
 
-        botClient.StartReceiving(
-            HandleUpdateAsync,
-            HandlePollingErrorAsync,
-            receiverOptions,
-            stoppingToken);
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                var me = await botClient.GetMe(stoppingToken);
+                logger.LogInformation("Telegram bot @{BotUsername} started", me.Username);
+
+                await botClient.ReceiveAsync(
+                    HandleUpdateAsync,
+                    HandlePollingErrorAsync,
+                    receiverOptions,
+                    stoppingToken);
+
+                if (!stoppingToken.IsCancellationRequested)
+                {
+                    logger.LogWarning(
+                        "Telegram bot receiver stopped. Restarting in {DelaySeconds} seconds",
+                        RestartDelay.TotalSeconds);
+                    await Task.Delay(RestartDelay, stoppingToken);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(
+                    ex,
+                    "Telegram bot receiver crashed. Restarting in {DelaySeconds} seconds",
+                    RestartDelay.TotalSeconds);
+
+                try
+                {
+                    await Task.Delay(RestartDelay, stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     private async Task HandleUpdateAsync(ITelegramBotClient client, Update update, CancellationToken cancellationToken)
