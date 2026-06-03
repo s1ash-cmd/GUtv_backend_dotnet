@@ -127,6 +127,16 @@ public class UserMutation
         return await userService.UnlinkTelegram(userId);
     }
 
+    [Authorize]
+    public async Task<User> RegenerateMyAvatar(
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserService userService)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return await userService.RegenerateAvatarSeedAsync(userId);
+    }
+
     public Task<User> LinkTelegramByCode(
         string botToken,
         string code,

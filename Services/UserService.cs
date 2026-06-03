@@ -38,6 +38,7 @@ public class UserService
             Login = login,
             PasswordHash = HashPassword(password),
             Name = name,
+            AvatarSeed = GenerateAvatarSeed(),
             Role = role,
             JoinYear = joinYear ?? DateTime.UtcNow.Year
         };
@@ -59,6 +60,16 @@ public class UserService
     public async Task<User?> GetByIdAsync(int id)
     {
         return await _db.Users.FindAsync(id);
+    }
+
+    public async Task<User> RegenerateAvatarSeedAsync(int userId)
+    {
+        var user = await _db.Users.FindAsync(userId)
+            ?? throw new GraphQLException("Пользователь не найден");
+
+        user.AvatarSeed = GenerateAvatarSeed();
+        await _db.SaveChangesAsync();
+        return user;
     }
 
     public bool VerifyPassword(string password, string passwordHash)
@@ -194,5 +205,10 @@ public class UserService
     private static string HashPassword(string password)
     {
         return BCrypt.Net.BCrypt.HashPassword(password);
+    }
+
+    private static string GenerateAvatarSeed()
+    {
+        return Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
     }
 }

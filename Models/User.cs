@@ -7,6 +7,7 @@ public class User
     [GraphQLIgnore]
     public string PasswordHash { get; set; } = "";
     public string Name { get; set; } = "";
+    public string? AvatarSeed { get; set; }
 
     public long? TelegramChatId { get; set; }
     public string? TelegramUsername { get; set; }

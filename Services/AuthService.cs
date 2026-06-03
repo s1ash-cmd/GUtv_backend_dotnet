@@ -14,7 +14,7 @@ public class AuthService(IConfiguration config)
         var key = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(config["Jwt:Key"]!));
 
-        var claims = new[]
+        var claims = new List<Claim>
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
@@ -22,6 +22,9 @@ public class AuthService(IConfiguration config)
             new Claim(ClaimTypes.Name, user.Name),
             new Claim(ClaimTypes.Role, user.Role.ToString())
         };
+
+        if (!string.IsNullOrWhiteSpace(user.AvatarSeed))
+            claims.Add(new Claim("avatarSeed", user.AvatarSeed));
 
         var token = new JwtSecurityToken(
             issuer: config["Jwt:Issuer"],

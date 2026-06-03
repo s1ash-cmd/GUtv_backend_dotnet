@@ -255,6 +255,9 @@ namespace GUtv_backend_dotnet.Migrations
                     b.Property<bool>("Banned")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("AvatarSeed")
+                        .HasColumnType("text");
+
                     b.Property<int>("JoinYear")
                         .HasColumnType("integer");
 
