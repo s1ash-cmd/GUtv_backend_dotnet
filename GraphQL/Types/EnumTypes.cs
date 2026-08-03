@@ -30,6 +30,7 @@ public sealed class EqCategoryType : EnumType<EqCategory>
         descriptor.Value(EqCategory.Sound).Name(nameof(EqCategory.Sound));
         descriptor.Value(EqCategory.Stand).Name(nameof(EqCategory.Stand));
         descriptor.Value(EqCategory.Light).Name(nameof(EqCategory.Light));
+        descriptor.Value(EqCategory.Filters).Name(nameof(EqCategory.Filters));
         descriptor.Value(EqCategory.Other).Name(nameof(EqCategory.Other));
     }
 }

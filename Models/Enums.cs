@@ -18,7 +18,8 @@ public enum EqCategory
     Sound,
     Stand,
     Light,
-    Other
+    Filters,
+    Other,
 }
 
 public enum EqAccess
