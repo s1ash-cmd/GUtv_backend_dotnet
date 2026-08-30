@@ -20,8 +20,10 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         if (input.Equipment is null || input.Equipment.Count == 0)
             throw new GraphQLException("Не выбрано оборудование для бронирования");
 
+        await using var transaction = await db.Database.BeginTransactionAsync();
+
         var warnings = new Dictionary<string, object>();
-        if ((input.StartTime - DateTime.UtcNow).TotalDays < 2)
+        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
             warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
 
         var booking = new Booking
@@ -37,16 +39,15 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         };
 
         var bookingItems = new List<BookingItem>();
-        foreach (var requestedItem in input.Equipment)
+        foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
         {
-            if (requestedItem.Quantity <= 0)
-                throw new GraphQLException($"Количество для модели {requestedItem.ModelName} должно быть больше 0");
-
             var eqModel = await db.EqModels
                 .FirstOrDefaultAsync(m => m.Name == requestedItem.ModelName);
 
             if (eqModel == null)
                 throw new GraphQLException($"Модель оборудования {requestedItem.ModelName} не найдена");
+
+            await AcquireAdvisoryLockAsync(1, eqModel.Id);
 
             if (!HasEquipmentAccess(user.Role, eqModel.Access))
             {
@@ -91,11 +92,118 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         var createdBooking = await GetBookingEntityByIdAsync(booking.Id);
         await telegramNotificationService.NotifyAdminsNewBooking(createdBooking);
 
         return createdBooking;
+    }
+
+    public async Task<Booking> UpdateBookingAsync(
+        int bookingId,
+        CreateBookingInput input,
+        int actorUserId,
+        bool isAdmin)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await AcquireAdvisoryLockAsync(2, bookingId);
+
+        var booking = await db.Bookings
+            .Include(b => b.BookingItems)
+            .FirstOrDefaultAsync(b => b.Id == bookingId)
+            ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
+        var bookingUser = await db.Users.FindAsync(booking.UserId)
+            ?? throw new GraphQLException("Владелец бронирования не найден");
+
+        if (!isAdmin && booking.UserId != actorUserId)
+            throw new GraphQLException("Вы не можете изменить чужое бронирование");
+
+        if (!isAdmin && booking.Status is not (BookingStatus.Pending or BookingStatus.Approved))
+            throw new GraphQLException("Изменить можно только ожидающее или одобренное бронирование");
+
+        if (input.StartTime >= input.EndTime)
+            throw new GraphQLException("Дата начала должна быть раньше даты окончания");
+
+        if (string.IsNullOrWhiteSpace(input.Reason))
+            throw new GraphQLException("Причина бронирования не может быть пустой");
+
+        if (input.Equipment is null || input.Equipment.Count == 0)
+            throw new GraphQLException("Не выбрано оборудование для бронирования");
+
+        var replacementItems = new List<BookingItem>();
+        foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
+        {
+            var eqModel = await db.EqModels
+                .FirstOrDefaultAsync(m => m.Name == requestedItem.ModelName)
+                ?? throw new GraphQLException($"Модель оборудования {requestedItem.ModelName} не найдена");
+
+            await AcquireAdvisoryLockAsync(1, eqModel.Id);
+
+            if (!isAdmin && !HasEquipmentAccess(bookingUser.Role, eqModel.Access))
+            {
+                throw eqModel.Access switch
+                {
+                    EqAccess.Ronin => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin"),
+                    EqAccess.Osnova => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется быть в основе"),
+                    _ => new GraphQLException(
+                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}")
+                };
+            }
+
+            var availableItems = await GetAvailableItemsAsync(
+                eqModel.Id,
+                input.StartTime,
+                input.EndTime,
+                requestedItem.Quantity,
+                bookingId);
+
+            if (availableItems.Count < requestedItem.Quantity)
+            {
+                var conflicts = await GetBookingConflictsAsync(
+                    eqModel.Id,
+                    input.StartTime,
+                    input.EndTime,
+                    bookingId);
+                throw new GraphQLException(
+                    FormatConflictMessage(
+                        requestedItem.ModelName,
+                        availableItems.Count,
+                        requestedItem.Quantity,
+                        conflicts));
+            }
+
+            replacementItems.AddRange(availableItems.Select(eqItem => new BookingItem
+            {
+                BookingId = booking.Id,
+                EqItemId = eqItem.Id,
+                StartDate = input.StartTime,
+                EndDate = input.EndTime,
+                IsReturned = false
+            }));
+        }
+
+        var warnings = new Dictionary<string, object>();
+        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
+            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
+
+        db.BookingItems.RemoveRange(booking.BookingItems);
+        booking.BookingItems = replacementItems;
+        booking.Reason = input.Reason.Trim();
+        booking.StartTime = input.StartTime;
+        booking.EndTime = input.EndTime;
+        booking.Comment = input.Comment;
+        booking.AdminComment = null;
+        booking.Status = BookingStatus.Pending;
+        booking.WarningsJson = SerializeWarnings(warnings);
+
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        var updatedBooking = await GetBookingEntityByIdAsync(booking.Id);
+        await telegramNotificationService.NotifyAdminsBookingUpdated(updatedBooking);
+        return updatedBooking;
     }
 
     public async Task<Booking> GetBookingByIdAsync(int id, int currentUserId, bool isAdmin)
@@ -117,9 +225,6 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var bookings = await FindBookingWithIncludes()
             .Where(b => b.UserId == userId)
             .ToListAsync();
-
-        if (bookings.Count == 0)
-            throw new GraphQLException($"У пользователя с ID {userId} нет бронирований");
 
         return bookings;
     }
@@ -189,6 +294,9 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<Booking> ApproveBookingAsync(int bookingId, string? adminComment = null)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await AcquireAdvisoryLockAsync(2, bookingId);
+
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
@@ -201,6 +309,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
         await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
 
@@ -209,6 +318,9 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<Booking> CompleteBookingAsync(int bookingId)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await AcquireAdvisoryLockAsync(2, bookingId);
+
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
@@ -218,6 +330,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Completed;
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
         await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
 
@@ -226,6 +339,9 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<Booking> CancelBookingAsync(int bookingId, int userId, bool isAdmin, string? adminComment = null)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await AcquireAdvisoryLockAsync(2, bookingId);
+
         var booking = await db.Bookings
             .Include(b => b.User)
             .FirstOrDefaultAsync(b => b.Id == bookingId)
@@ -254,6 +370,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             booking.AdminComment = adminComment;
 
         await db.SaveChangesAsync();
+        await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
         await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
 
@@ -265,23 +382,34 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return string.IsNullOrWhiteSpace(booking.WarningsJson) ? "{}" : booking.WarningsJson;
     }
 
-    private async Task<List<EqItem>> GetAvailableItemsAsync(int eqModelId, DateTime start, DateTime end, int requiredCount)
+    private async Task<List<EqItem>> GetAvailableItemsAsync(
+        int eqModelId,
+        DateTime start,
+        DateTime end,
+        int requiredCount,
+        int? excludedBookingId = null)
     {
         var items = await db.EqItems
             .Include(i => i.EqModel)
             .Where(i => i.EqModelId == eqModelId)
             .Where(i => i.Operable)
             .Where(i => !i.BookingItems.Any(bi =>
+                (!excludedBookingId.HasValue || bi.BookingId != excludedBookingId.Value) &&
                 (bi.Booking.Status == BookingStatus.Pending ||
                  bi.Booking.Status == BookingStatus.Approved) &&
                 start < bi.EndDate && end > bi.StartDate))
+            .OrderBy(i => i.InventoryNumber)
             .Take(requiredCount + 1)
             .ToListAsync();
 
         return items.Take(requiredCount).ToList();
     }
 
-    private async Task<List<BookingItem>> GetBookingConflictsAsync(int eqModelId, DateTime start, DateTime end)
+    private async Task<List<BookingItem>> GetBookingConflictsAsync(
+        int eqModelId,
+        DateTime start,
+        DateTime end,
+        int? excludedBookingId = null)
     {
         return await db.BookingItems
             .AsNoTracking()
@@ -290,6 +418,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             .Include(bi => bi.EqItem)
             .ThenInclude(i => i.EqModel)
             .Where(bi => bi.EqItem.EqModelId == eqModelId)
+            .Where(bi => !excludedBookingId.HasValue || bi.BookingId != excludedBookingId.Value)
             .Where(bi =>
                 (bi.Booking.Status == BookingStatus.Pending ||
                  bi.Booking.Status == BookingStatus.Approved) &&
@@ -389,6 +518,33 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             EqAccess.Ronin => role is UserRole.Ronin or UserRole.Admin,
             _ => false
         };
+    }
+
+    private static IReadOnlyList<CreateBookingEquipmentInput> NormalizeRequestedEquipment(
+        IReadOnlyList<CreateBookingEquipmentInput> equipment)
+    {
+        foreach (var item in equipment)
+        {
+            if (string.IsNullOrWhiteSpace(item.ModelName))
+                throw new GraphQLException("Название модели оборудования не может быть пустым");
+
+            if (item.Quantity <= 0)
+                throw new GraphQLException($"Количество для модели {item.ModelName} должно быть больше 0");
+        }
+
+        return equipment
+            .GroupBy(item => item.ModelName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new CreateBookingEquipmentInput(
+                group.Key,
+                group.Sum(item => item.Quantity)))
+            .ToList();
+    }
+
+    private async Task AcquireAdvisoryLockAsync(int lockGroup, int entityId)
+    {
+        await db.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT pg_advisory_xact_lock({lockGroup}, {entityId})");
     }
 }
 

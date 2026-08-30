@@ -17,6 +17,16 @@ public class TelegramNotificationService(
 {
     public async Task NotifyAdminsNewBooking(Booking booking)
     {
+        await NotifyAdminsBookingSubmitted(booking, isUpdated: false);
+    }
+
+    public async Task NotifyAdminsBookingUpdated(Booking booking)
+    {
+        await NotifyAdminsBookingSubmitted(booking, isUpdated: true);
+    }
+
+    private async Task NotifyAdminsBookingSubmitted(Booking booking, bool isUpdated)
+    {
         try
         {
             var admins = await db.Users
@@ -27,7 +37,7 @@ public class TelegramNotificationService(
                 return;
 
             var loadedBooking = await LoadBooking(booking.Id);
-            var message = BuildNewBookingMessage(loadedBooking);
+            var message = BuildBookingSubmittedMessage(loadedBooking, isUpdated);
             var keyboard = new InlineKeyboardMarkup(new[]
             {
                 new[]
@@ -83,11 +93,13 @@ public class TelegramNotificationService(
             .FirstAsync(b => b.Id == bookingId);
     }
 
-    private static string BuildNewBookingMessage(Booking booking)
+    private static string BuildBookingSubmittedMessage(Booking booking, bool isUpdated)
     {
         var message = new StringBuilder();
-        message.AppendLine($"🆕 {TelegramText.BookingTitle(booking.Id)}");
-        message.AppendLine("<b>Новая заявка ожидает решения</b>");
+        message.AppendLine($"{(isUpdated ? "✏️" : "🆕")} {TelegramText.BookingTitle(booking.Id)}");
+        message.AppendLine(isUpdated
+            ? "<b>Заявка изменена и снова ожидает решения</b>"
+            : "<b>Новая заявка ожидает решения</b>");
         message.AppendLine();
         message.AppendLine($"👤 <b>Пользователь:</b> {TelegramText.Escape(booking.User.Name)} (@{TelegramText.Escape(booking.User.TelegramUsername)})");
         message.AppendLine($"📝 <b>Причина:</b> {TelegramText.Escape(booking.Reason)}");

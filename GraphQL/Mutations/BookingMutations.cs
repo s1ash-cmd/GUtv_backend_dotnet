@@ -29,6 +29,19 @@ public class BookingMutations
         return cartService.CreateBookingFromCartAsync(userId);
     }
 
+    [Authorize]
+    public Task<Booking> UpdateBookingFromCart(
+        int bookingId,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        CartService cartService)
+    {
+        var httpUser = httpContextAccessor.HttpContext?.User;
+        var userId = equipmentService.GetRequiredUserId(httpUser);
+        var isAdmin = httpUser?.IsInRole("Admin") ?? false;
+        return cartService.UpdateBookingFromCartAsync(userId, bookingId, isAdmin);
+    }
+
     [Authorize(Roles = ["Admin"])]
     public async Task<Booking> ApproveBooking(
         int bookingId,
@@ -140,7 +153,7 @@ public class BookingMutations
     private static string? FormatAdminComment(User admin, string? comment)
     {
         return string.IsNullOrWhiteSpace(comment)
-            ? null
+            ? admin.Name
             : $"{admin.Name}: {comment.Trim()}";
     }
 

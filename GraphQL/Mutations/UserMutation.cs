@@ -20,7 +20,7 @@ public class UserMutation
             input.Password,
             input.Name,
             role,
-            input.JoinYear);
+            joinYear: null);
 
         var accessToken = authService.GenerateAccessToken(user);
         var refreshToken = authService.GenerateRefreshToken();

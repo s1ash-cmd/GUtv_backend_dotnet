@@ -186,6 +186,14 @@ public class EquipmentService(AppDbContext db)
         var model = await db.EqModels.FindAsync(id)
             ?? throw new GraphQLException($"Модель оборудования с ID {id} не найдена");
 
+        var hasBookingHistory = await db.BookingItems
+            .AnyAsync(item => item.EqItem.EqModelId == id);
+        if (hasBookingHistory)
+        {
+            throw new GraphQLException(
+                "Нельзя удалить модель оборудования, которая присутствует в истории бронирований");
+        }
+
         db.EqModels.Remove(model);
         await db.SaveChangesAsync();
         return true;

@@ -9,6 +9,7 @@ public class Cart
     public DateTime? StartTime { get; set; }
     public DateTime? EndTime { get; set; }
     public string? Comment { get; set; }
+    public int? EditingBookingId { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
     public List<CartItem> Items { get; set; } = [];
 }

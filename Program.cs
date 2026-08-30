@@ -103,6 +103,31 @@ var app = builder.Build();
 
 app.UseCors("ConfiguredOrigins");
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    if (context.User.Identity?.IsAuthenticated == true)
+    {
+        var userIdValue = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!int.TryParse(userIdValue, out var userId))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        var db = context.RequestServices.GetRequiredService<AppDbContext>();
+        var isActiveUser = await db.Users
+            .AsNoTracking()
+            .AnyAsync(user => user.Id == userId && !user.Banned);
+
+        if (!isActiveUser)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+    }
+
+    await next();
+});
 app.UseAuthorization();
 
 app.MapGraphQL();

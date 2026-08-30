@@ -63,4 +63,28 @@ public class CartMutations
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
         return cartService.ClearCartAsync(userId);
     }
+
+    [Authorize]
+    public Task<Cart> AddBookingItemsToCart(
+        int bookingId,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        CartService cartService)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return cartService.AddBookingItemsToCartAsync(userId, bookingId);
+    }
+
+    [Authorize]
+    public Task<Cart> PrepareBookingEdit(
+        int bookingId,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        CartService cartService)
+    {
+        var httpUser = httpContextAccessor.HttpContext?.User;
+        var userId = equipmentService.GetRequiredUserId(httpUser);
+        var isAdmin = httpUser?.IsInRole("Admin") ?? false;
+        return cartService.PrepareBookingEditAsync(userId, bookingId, isAdmin);
+    }
 }

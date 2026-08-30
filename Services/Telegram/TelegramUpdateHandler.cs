@@ -10,10 +10,16 @@ namespace GUtv_backend_dotnet.Services.Telegram;
 
 public class TelegramUpdateHandler
 {
+    private sealed record PendingComment(
+        string Action,
+        int BookingId,
+        int PromptMessageId,
+        DateTimeOffset ExpiresAt);
+
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<TelegramUpdateHandler> _logger;
     private readonly Dictionary<string, Type> _commands;
-    private readonly ConcurrentDictionary<long, (string Action, int BookingId)> _pendingComments = new();
+    private readonly ConcurrentDictionary<long, PendingComment> _pendingComments = new();
     private readonly string? _unknownCommandVideo;
 
     public TelegramUpdateHandler(
@@ -45,20 +51,36 @@ public class TelegramUpdateHandler
         _logger.LogInformation("Telegram message from @{Username} ({ChatId}): {Message}", username ?? "unknown", chatId, messageText ?? update.Message.Type.ToString());
         await UpdateUsername(chatId, username);
 
-        if (_pendingComments.ContainsKey(chatId))
+        if (_pendingComments.TryGetValue(chatId, out var pendingComment))
         {
-            if (messageText is null)
+            if (pendingComment.ExpiresAt <= DateTimeOffset.UtcNow ||
+                messageText?.StartsWith('/') == true)
+            {
+                _pendingComments.TryRemove(chatId, out _);
+            }
+            else if (message.ReplyToMessage?.MessageId != pendingComment.PromptMessageId)
             {
                 await botClient.SendMessage(
                     chatId: chatId,
-                    text: "💬 Напишите текстовый комментарий или <code>-</code>, чтобы пропустить.",
-                    parseMode: ParseMode.Html,
+                    text: "Ответьте на сообщение с запросом комментария или нажмите кнопку бронирования заново.",
                     cancellationToken: cancellationToken);
                 return;
             }
+            else
+            {
+                if (messageText is null)
+                {
+                    await botClient.SendMessage(
+                        chatId: chatId,
+                        text: "💬 Напишите текстовый комментарий или <code>-</code>, чтобы пропустить.",
+                        parseMode: ParseMode.Html,
+                        cancellationToken: cancellationToken);
+                    return;
+                }
 
-            await HandleCommentReply(botClient, message, cancellationToken);
-            return;
+                await HandleCommentReply(botClient, message, cancellationToken);
+                return;
+            }
         }
 
         if (messageText is null)
@@ -124,15 +146,20 @@ public class TelegramUpdateHandler
             }
 
             var action = parts[1];
-            _pendingComments[chatId.Value] = (action, bookingId);
             var actionText = action == "approve" ? "одобрения" : "отклонения";
 
-            await botClient.SendMessage(
+            var promptMessage = await botClient.SendMessage(
                 chatId: chatId.Value,
                 text: $"💬 <b>Комментарий для {actionText}</b>\n\n{TelegramText.BookingTitle(bookingId)}\nНапишите текст или <code>-</code>, чтобы пропустить.",
                 parseMode: ParseMode.Html,
                 replyMarkup: new ForceReplyMarkup { Selective = true },
                 cancellationToken: cancellationToken);
+
+            _pendingComments[chatId.Value] = new PendingComment(
+                action,
+                bookingId,
+                promptMessage.MessageId,
+                DateTimeOffset.UtcNow.AddMinutes(10));
 
             await botClient.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
         }
@@ -273,7 +300,7 @@ public class TelegramUpdateHandler
     private static string? FormatAdminComment(Models.User admin, string? comment)
     {
         return string.IsNullOrWhiteSpace(comment)
-            ? null
+            ? admin.Name
             : $"{admin.Name}: {comment.Trim()}";
     }
 
