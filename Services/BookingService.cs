@@ -49,18 +49,16 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
             await AcquireAdvisoryLockAsync(1, eqModel.Id);
 
-            if (!HasEquipmentAccess(user.Role, eqModel.Access))
+            var hasEquipmentAccess = HasEquipmentAccess(user.Role, eqModel.Access);
+            if (!hasEquipmentAccess && eqModel.Access == EqAccess.Ronin)
             {
-                throw eqModel.Access switch
-                {
-                    EqAccess.Ronin => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin"),
-                    EqAccess.Osnova => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется быть в основе"),
-                    _ => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}")
-                };
+                throw new GraphQLException(
+                    $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin");
             }
+
+            if (!hasEquipmentAccess && eqModel.Access == EqAccess.Osnova)
+                warnings[$"missingOsnovaAccess_{eqModel.Id}"] =
+                    $"Для оборудования {requestedItem.ModelName} требуется доступ «Основа»";
 
             var availableItems = await GetAvailableItemsAsync(
                 eqModel.Id,
@@ -89,6 +87,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         }
 
         booking.BookingItems = bookingItems;
+        booking.WarningsJson = SerializeWarnings(warnings);
 
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
@@ -131,6 +130,10 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         if (input.Equipment is null || input.Equipment.Count == 0)
             throw new GraphQLException("Не выбрано оборудование для бронирования");
 
+        var warnings = new Dictionary<string, object>();
+        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
+            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
+
         var replacementItems = new List<BookingItem>();
         foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
         {
@@ -140,18 +143,16 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
             await AcquireAdvisoryLockAsync(1, eqModel.Id);
 
-            if (!isAdmin && !HasEquipmentAccess(bookingUser.Role, eqModel.Access))
+            var ownerHasEquipmentAccess = HasEquipmentAccess(bookingUser.Role, eqModel.Access);
+            if (!isAdmin && !ownerHasEquipmentAccess && eqModel.Access == EqAccess.Ronin)
             {
-                throw eqModel.Access switch
-                {
-                    EqAccess.Ronin => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin"),
-                    EqAccess.Osnova => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется быть в основе"),
-                    _ => new GraphQLException(
-                        $"У вас нет доступа к оборудованию {requestedItem.ModelName}")
-                };
+                throw new GraphQLException(
+                    $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin");
             }
+
+            if (!ownerHasEquipmentAccess && eqModel.Access == EqAccess.Osnova)
+                warnings[$"missingOsnovaAccess_{eqModel.Id}"] =
+                    $"Для оборудования {requestedItem.ModelName} требуется доступ «Основа»";
 
             var availableItems = await GetAvailableItemsAsync(
                 eqModel.Id,
@@ -184,10 +185,6 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
                 IsReturned = false
             }));
         }
-
-        var warnings = new Dictionary<string, object>();
-        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
-            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
 
         db.BookingItems.RemoveRange(booking.BookingItems);
         booking.BookingItems = replacementItems;
