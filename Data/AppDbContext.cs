@@ -18,6 +18,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     {
         base.OnModelCreating(modelBuilder);
 
+        modelBuilder.Entity<User>()
+            .Property(u => u.NormalizedLogin)
+            .HasComputedColumnSql("lower(btrim(\"Login\"))", stored: true);
+
+        modelBuilder.Entity<User>()
+            .HasIndex(u => u.NormalizedLogin)
+            .IsUnique();
+
         modelBuilder.Entity<EqItem>()
             .HasIndex(e => e.InventoryNumber)
             .IsUnique();

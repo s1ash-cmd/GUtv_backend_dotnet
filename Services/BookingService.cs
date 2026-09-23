@@ -11,6 +11,30 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 {
     public async Task<Booking> CreateBookingAsync(CreateBookingInput input, int userId)
     {
+        Booking booking;
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            try
+            {
+                booking = await CreateBookingInTransactionAsync(input, userId);
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                db.ChangeTracker.Clear();
+                throw;
+            }
+        }
+
+        await NotifyBookingCreatedAsync(booking);
+        return booking;
+    }
+
+    // The caller owns the transaction, including any cart changes, and sends notifications after commit.
+    internal async Task<Booking> CreateBookingInTransactionAsync(CreateBookingInput input, int userId)
+    {
+        RequireTransaction();
         var user = await db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
@@ -19,8 +43,6 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         if (input.Equipment is null || input.Equipment.Count == 0)
             throw new GraphQLException("Не выбрано оборудование для бронирования");
-
-        await using var transaction = await db.Database.BeginTransactionAsync();
 
         var warnings = new Dictionary<string, object>();
         if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
@@ -91,12 +113,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
-        await transaction.CommitAsync();
-
-        var createdBooking = await GetBookingEntityByIdAsync(booking.Id);
-        await telegramNotificationService.NotifyAdminsNewBooking(createdBooking);
-
-        return createdBooking;
+        return await GetBookingEntityByIdAsync(booking.Id);
     }
 
     public async Task<Booking> UpdateBookingAsync(
@@ -105,7 +122,33 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         int actorUserId,
         bool isAdmin)
     {
-        await using var transaction = await db.Database.BeginTransactionAsync();
+        Booking booking;
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            try
+            {
+                booking = await UpdateBookingInTransactionAsync(bookingId, input, actorUserId, isAdmin);
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                await transaction.RollbackAsync();
+                db.ChangeTracker.Clear();
+                throw;
+            }
+        }
+
+        await NotifyBookingUpdatedAsync(booking);
+        return booking;
+    }
+
+    internal async Task<Booking> UpdateBookingInTransactionAsync(
+        int bookingId,
+        CreateBookingInput input,
+        int actorUserId,
+        bool isAdmin)
+    {
+        RequireTransaction();
         await AcquireAdvisoryLockAsync(2, bookingId);
 
         var booking = await db.Bookings
@@ -197,10 +240,19 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         booking.WarningsJson = SerializeWarnings(warnings);
 
         await db.SaveChangesAsync();
-        await transaction.CommitAsync();
-        var updatedBooking = await GetBookingEntityByIdAsync(booking.Id);
-        await telegramNotificationService.NotifyAdminsBookingUpdated(updatedBooking);
-        return updatedBooking;
+        return await GetBookingEntityByIdAsync(booking.Id);
+    }
+
+    internal Task NotifyBookingCreatedAsync(Booking booking) =>
+        telegramNotificationService.NotifyAdminsNewBooking(booking);
+
+    internal Task NotifyBookingUpdatedAsync(Booking booking) =>
+        telegramNotificationService.NotifyAdminsBookingUpdated(booking);
+
+    private void RequireTransaction()
+    {
+        if (db.Database.CurrentTransaction is null)
+            throw new InvalidOperationException("Booking changes require a transaction owned by the caller.");
     }
 
     public async Task<Booking> GetBookingByIdAsync(int id, int currentUserId, bool isAdmin)

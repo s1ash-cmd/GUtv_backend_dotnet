@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace GUtv_backend_dotnet.Services;
 
@@ -30,13 +31,19 @@ public class UserService
         login = login.Trim();
         name = name.Trim();
 
-        if (await _db.Users.AnyAsync(u => EF.Functions.ILike(u.Login, login)))
+        // Hash outside the lock so password hashing does not serialize registrations.
+        var passwordHash = HashPassword(password);
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        // A single database lock also makes first-administrator selection atomic.
+        await _db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(4, 0)");
+
+        if (await FindByLogin(login).AnyAsync())
             throw new GraphQLException("Пользователь с таким логином уже существует");
 
         var user = new User
         {
             Login = login,
-            PasswordHash = HashPassword(password),
+            PasswordHash = passwordHash,
             Name = name,
             AvatarSeed = GenerateAvatarSeed(),
             Role = role,
@@ -47,15 +54,28 @@ public class UserService
             user.Role = UserRole.Admin;
 
         _db.Users.Add(user);
-        await _db.SaveChangesAsync();
+        try
+        {
+            await _db.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is PostgresException
+               { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "IX_Users_NormalizedLogin" })
+        {
+            throw new GraphQLException("Пользователь с таким логином уже существует");
+        }
         return user;
     }
 
     public async Task<User?> GetByLoginAsync(string login)
     {
-        return await _db.Users
-            .FirstOrDefaultAsync(u => EF.Functions.ILike(u.Login, login));
+        return await FindByLogin(login.Trim()).FirstOrDefaultAsync();
     }
+
+    // Normalize both operands in PostgreSQL, using the same rules as the unique column.
+    // Parameters stay SQL parameters: '%' and '_' are literal login characters.
+    private IQueryable<User> FindByLogin(string login) =>
+        _db.Users.FromSqlInterpolated($"SELECT * FROM \"Users\" WHERE \"NormalizedLogin\" = lower(btrim({login}))");
 
     public async Task<User?> GetByIdAsync(int id)
     {
@@ -150,6 +170,9 @@ public class UserService
 
     public async Task<User> LinkTelegramByCode(string code, long chatId, string? username)
     {
+        if (chatId <= 0)
+            throw new GraphQLException("Привязать Telegram можно только в личном чате с ботом");
+
         var user = await _db.Users.FirstOrDefaultAsync(u => u.TelegramLinkCode == code)
             ?? throw new GraphQLException("Неверный код привязки");
 

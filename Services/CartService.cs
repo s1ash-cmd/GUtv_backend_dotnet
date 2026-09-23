@@ -7,7 +7,73 @@ namespace GUtv_backend_dotnet.Services;
 
 public class CartService(AppDbContext db, BookingService bookingService)
 {
-    public async Task<Cart> GetOrCreateCartAsync(int userId)
+    public Task<Cart> GetOrCreateCartAsync(int userId) =>
+        WithCartLockAsync(userId, () => GetOrCreateCartCoreAsync(userId));
+
+    public Task<Cart> SetCartDetailsAsync(int userId, UpdateCartDetailsInput input) =>
+        WithCartLockAsync(userId, () => SetCartDetailsCoreAsync(userId, input));
+
+    public Task<Cart> AddCartItemAsync(int userId, int eqModelId, int quantity) =>
+        WithCartLockAsync(userId, () => AddCartItemCoreAsync(userId, eqModelId, quantity));
+
+    public Task<Cart> UpdateCartItemQuantityAsync(int userId, int eqModelId, int quantity) =>
+        WithCartLockAsync(userId, () => UpdateCartItemQuantityCoreAsync(userId, eqModelId, quantity));
+
+    public Task<Cart> RemoveCartItemAsync(int userId, int eqModelId) =>
+        WithCartLockAsync(userId, () => RemoveCartItemCoreAsync(userId, eqModelId));
+
+    public Task<bool> ClearCartAsync(int userId) =>
+        WithCartLockAsync(userId, () => ClearCartCoreAsync(userId));
+
+    public Task<Cart> AddBookingItemsToCartAsync(int userId, int bookingId) =>
+        WithCartLockAsync(userId, () => AddBookingItemsToCartCoreAsync(userId, bookingId));
+
+    public Task<Cart> PrepareBookingEditAsync(int userId, int bookingId, bool isAdmin) =>
+        WithCartLockAsync(userId, () => PrepareBookingEditCoreAsync(userId, bookingId, isAdmin));
+
+    public async Task<Booking> CreateBookingFromCartAsync(int userId)
+    {
+        var booking = await WithCartLockAsync(userId, () => CreateBookingFromCartCoreAsync(userId));
+        await bookingService.NotifyBookingCreatedAsync(booking);
+        return booking;
+    }
+
+    public async Task<Booking> UpdateBookingFromCartAsync(int userId, int bookingId, bool isAdmin)
+    {
+        var booking = await WithCartLockAsync(userId, () => UpdateBookingFromCartCoreAsync(userId, bookingId, isAdmin));
+        await bookingService.NotifyBookingUpdatedAsync(booking);
+        return booking;
+    }
+
+    private async Task<T> WithCartLockAsync<T>(int userId, Func<Task<T>> operation)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        // Lock by user, even when their cart does not exist yet. This works across backend instances.
+        // Lock order is cart -> booking -> equipment; booking operations never acquire cart locks.
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(3, {userId})");
+
+        // A GraphQL mutation may reuse this context for several root fields. Reload cart state
+        // after taking the lock instead of retaining an earlier field's tracked snapshot.
+        foreach (var entry in db.ChangeTracker.Entries()
+                     .Where(entry => entry.Entity is Cart or CartItem).ToList())
+            entry.State = EntityState.Detached;
+
+        try
+        {
+            var result = await operation();
+            await transaction.CommitAsync();
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            // Do not let a later GraphQL field save entities left over from a rolled-back checkout.
+            db.ChangeTracker.Clear();
+            throw;
+        }
+    }
+
+    private async Task<Cart> GetOrCreateCartCoreAsync(int userId)
     {
         var cart = await db.Carts
             .Include(c => c.Items)
@@ -27,7 +93,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
             .FirstAsync(c => c.Id == cart.Id);
     }
 
-    public async Task<Cart> SetCartDetailsAsync(int userId, UpdateCartDetailsInput input)
+    private async Task<Cart> SetCartDetailsCoreAsync(int userId, UpdateCartDetailsInput input)
     {
         if (input.StartTime.HasValue && input.EndTime.HasValue && input.StartTime >= input.EndTime)
             throw new GraphQLException("Дата начала должна быть раньше даты окончания");
@@ -40,10 +106,10 @@ public class CartService(AppDbContext db, BookingService bookingService)
         cart.UpdatedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<Cart> AddCartItemAsync(int userId, int eqModelId, int quantity)
+    private async Task<Cart> AddCartItemCoreAsync(int userId, int eqModelId, int quantity)
     {
         if (quantity <= 0)
             throw new GraphQLException("Количество должно быть больше 0");
@@ -70,10 +136,10 @@ public class CartService(AppDbContext db, BookingService bookingService)
 
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<Cart> UpdateCartItemQuantityAsync(int userId, int eqModelId, int quantity)
+    private async Task<Cart> UpdateCartItemQuantityCoreAsync(int userId, int eqModelId, int quantity)
     {
         var cart = await GetCartTrackedAsync(userId);
         var item = await db.CartItems.FirstOrDefaultAsync(i => i.CartId == cart.Id && i.EqModelId == eqModelId)
@@ -86,10 +152,10 @@ public class CartService(AppDbContext db, BookingService bookingService)
 
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<Cart> RemoveCartItemAsync(int userId, int eqModelId)
+    private async Task<Cart> RemoveCartItemCoreAsync(int userId, int eqModelId)
     {
         var cart = await GetCartTrackedAsync(userId);
         var item = await db.CartItems.FirstOrDefaultAsync(i => i.CartId == cart.Id && i.EqModelId == eqModelId)
@@ -98,10 +164,10 @@ public class CartService(AppDbContext db, BookingService bookingService)
         db.CartItems.Remove(item);
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<bool> ClearCartAsync(int userId)
+    private async Task<bool> ClearCartCoreAsync(int userId)
     {
         var cart = await GetCartTrackedAsync(userId);
 
@@ -117,7 +183,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
         return true;
     }
 
-    public async Task<Cart> AddBookingItemsToCartAsync(int userId, int bookingId)
+    private async Task<Cart> AddBookingItemsToCartCoreAsync(int userId, int bookingId)
     {
         var booking = await GetOwnedBookingAsync(userId, bookingId);
         var cart = await GetCartTrackedAsync(userId);
@@ -153,10 +219,10 @@ public class CartService(AppDbContext db, BookingService bookingService)
         cart.EditingBookingId = null;
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<Cart> PrepareBookingEditAsync(int userId, int bookingId, bool isAdmin)
+    private async Task<Cart> PrepareBookingEditCoreAsync(int userId, int bookingId, bool isAdmin)
     {
         var booking = await GetBookingForCartAsync(
             userId,
@@ -184,12 +250,12 @@ public class CartService(AppDbContext db, BookingService bookingService)
         cart.UpdatedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
-        return await GetOrCreateCartAsync(userId);
+        return await GetOrCreateCartCoreAsync(userId);
     }
 
-    public async Task<Booking> CreateBookingFromCartAsync(int userId)
+    private async Task<Booking> CreateBookingFromCartCoreAsync(int userId)
     {
-        var cart = await GetOrCreateCartAsync(userId);
+        var cart = await GetOrCreateCartCoreAsync(userId);
         if (cart.EditingBookingId.HasValue)
             throw new GraphQLException("Корзина находится в режиме редактирования бронирования");
 
@@ -209,14 +275,14 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.Comment,
             cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModel.Name, i.Quantity)).ToList());
 
-        var booking = await bookingService.CreateBookingAsync(input, userId);
-        await ClearCartAsync(userId);
+        var booking = await bookingService.CreateBookingInTransactionAsync(input, userId);
+        await ClearCartCoreAsync(userId);
         return booking;
     }
 
-    public async Task<Booking> UpdateBookingFromCartAsync(int userId, int bookingId, bool isAdmin)
+    private async Task<Booking> UpdateBookingFromCartCoreAsync(int userId, int bookingId, bool isAdmin)
     {
-        var cart = await GetOrCreateCartAsync(userId);
+        var cart = await GetOrCreateCartCoreAsync(userId);
         if (cart.EditingBookingId != bookingId)
             throw new GraphQLException("Корзина не подготовлена для изменения этого бронирования");
 
@@ -236,8 +302,8 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.Comment,
             cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModel.Name, i.Quantity)).ToList());
 
-        var booking = await bookingService.UpdateBookingAsync(bookingId, input, userId, isAdmin);
-        await ClearCartAsync(userId);
+        var booking = await bookingService.UpdateBookingInTransactionAsync(bookingId, input, userId, isAdmin);
+        await ClearCartCoreAsync(userId);
         return booking;
     }
 

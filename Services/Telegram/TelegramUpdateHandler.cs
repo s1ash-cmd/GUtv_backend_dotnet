@@ -41,7 +41,9 @@ public class TelegramUpdateHandler
             return;
         }
 
-        if (update.Message is not { } message)
+        if (update.Message is not { } message ||
+            message.Chat.Type != ChatType.Private ||
+            message.From?.Id != message.Chat.Id)
             return;
 
         var chatId = message.Chat.Id;
@@ -122,6 +124,11 @@ public class TelegramUpdateHandler
     {
         try
         {
+            if (callbackQuery.Message is not { } message ||
+                message.Chat.Type != ChatType.Private ||
+                callbackQuery.From.Id != message.Chat.Id)
+                return;
+
             var data = callbackQuery.Data;
             var chatId = callbackQuery.Message?.Chat.Id;
             if (chatId is null || data?.StartsWith("booking:", StringComparison.Ordinal) != true)

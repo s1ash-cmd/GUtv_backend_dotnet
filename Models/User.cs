@@ -5,6 +5,8 @@ public class User
     public int Id { get; set; }
     public string Login { get; set; } = "";
     [GraphQLIgnore]
+    public string NormalizedLogin { get; private set; } = "";
+    [GraphQLIgnore]
     public string PasswordHash { get; set; } = "";
     public string Name { get; set; } = "";
     public string? AvatarSeed { get; set; }

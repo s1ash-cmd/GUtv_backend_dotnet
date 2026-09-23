@@ -5,6 +5,9 @@ namespace GUtv_backend_dotnet.Services.Telegram.Commands;
 
 public static class TelegramText
 {
+    private static readonly TimeZoneInfo BookingTimeZone =
+        TimeZoneInfo.FindSystemTimeZoneById("Europe/Moscow");
+
     public static string Escape(string? value)
     {
         return WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(value) ? "-" : value.Trim());
@@ -17,7 +20,16 @@ public static class TelegramText
 
     public static string Period(DateTime start, DateTime end)
     {
-        return $"{start:dd.MM.yyyy HH:mm} - {end:dd.MM.yyyy HH:mm}";
+        return $"{ToBookingTime(start):dd.MM.yyyy HH:mm} - {ToBookingTime(end):dd.MM.yyyy HH:mm} (МСК)";
+    }
+
+    private static DateTime ToBookingTime(DateTime value)
+    {
+        // Booking timestamps are stored in UTC. Do not use the server's local timezone.
+        var utc = value.Kind == DateTimeKind.Local
+            ? value.ToUniversalTime()
+            : DateTime.SpecifyKind(value, DateTimeKind.Utc);
+        return TimeZoneInfo.ConvertTimeFromUtc(utc, BookingTimeZone);
     }
 
     public static string BookingTitle(int bookingId)

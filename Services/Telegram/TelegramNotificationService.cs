@@ -30,7 +30,7 @@ public class TelegramNotificationService(
         try
         {
             var admins = await db.Users
-                .Where(u => u.Role == UserRole.Admin && u.TelegramChatId.HasValue)
+                .Where(u => u.Role == UserRole.Admin && u.TelegramChatId > 0)
                 .ToListAsync();
 
             if (admins.Count == 0)
@@ -67,7 +67,7 @@ public class TelegramNotificationService(
         try
         {
             var loadedBooking = await LoadBooking(booking.Id);
-            if (loadedBooking.User.TelegramChatId is null)
+            if (loadedBooking.User.TelegramChatId is null or <= 0)
                 return;
 
             var message = BuildStatusChangedMessage(loadedBooking, oldStatus);
