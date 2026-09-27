@@ -13,41 +13,24 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    if: github.repository == 's1ash-cmd/GUtv_backend_dotnet' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [self-hosted, linux, x64, gutv-backend]
     timeout-minutes: 45
     env:
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      GIT_TERMINAL_PROMPT: "0"
     steps:
-      - name: Publish on Fedora server
+      - name: Build and deploy on server
         shell: bash
         run: |
           set -euo pipefail
-          : "${DEPLOY_HOST:?Set DEPLOY_HOST in repository secrets}"
-          : "${DEPLOY_USER:?Set DEPLOY_USER in repository secrets}"
-          : "${DEPLOY_SSH_KEY:?Set DEPLOY_SSH_KEY in repository secrets}"
-          : "${DEPLOY_KNOWN_HOSTS:?Set DEPLOY_KNOWN_HOSTS in repository secrets}"
-          install -m 700 -d "$RUNNER_TEMP/gutv-ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/gutv-ssh/key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/gutv-ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/gutv-ssh/key"
-          ssh -i "$RUNNER_TEMP/gutv-ssh/key" \
-            -p "${DEPLOY_PORT:-22}" \
-            -o IdentitiesOnly=yes \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="$RUNNER_TEMP/gutv-ssh/known_hosts" \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'flock -w 1800 /opt/gutv/src/.deploy.lock bash -se' <<'REMOTE'
-          set -euo pipefail
+          export PATH=/usr/local/bin:/usr/bin:/bin
+          exec 9>/opt/gutv/src/.deploy.lock
+          flock -w 1800 9
           cd /opt/gutv/src/GUtv_backend_dotnet
+          test "$(git branch --show-current)" = master
+          sudo -n -l /usr/bin/systemctl restart gutv-backend.service >/dev/null
           git pull --ff-only origin master
           dotnet publish GUtv_backend_dotnet.csproj -c Release -o /opt/gutv/backend
           sudo -n systemctl restart gutv-backend.service
           sleep 3
           systemctl is-active --quiet gutv-backend.service
-          REMOTE
