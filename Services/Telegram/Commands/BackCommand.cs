@@ -24,7 +24,7 @@ public class BackCommand(UserService userService) : ICommand
             chatId: message.Chat.Id,
             text: "🏠 <b>Главное меню</b>\n\nВыберите действие:",
             parseMode: ParseMode.Html,
-            replyMarkup: TelegramKeyboards.MainMenu,
+            replyMarkup: TelegramKeyboards.ForUser(user),
             cancellationToken: cancellationToken);
     }
 }

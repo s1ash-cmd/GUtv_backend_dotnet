@@ -66,6 +66,7 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<EquipmentService>();
 builder.Services.AddScoped<BookingService>();
 builder.Services.AddScoped<CartService>();
+builder.Services.AddScoped<AnnouncementService>();
 builder.Services.AddScoped<BotSecurityService>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
@@ -75,8 +76,10 @@ if (string.IsNullOrWhiteSpace(botToken))
 
 builder.Services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(botToken));
 builder.Services.AddSingleton<TelegramUpdateHandler>();
+builder.Services.AddSingleton<AnnouncementBotHandler>();
 builder.Services.AddScoped<TelegramNotificationService>();
 builder.Services.AddHostedService<TelegramBotService>();
+builder.Services.AddHostedService<AnnouncementDeliveryWorker>();
 
 builder.Services
     .AddGraphQLServer()
@@ -96,6 +99,8 @@ builder.Services
     .AddTypeExtension<BookingMutations>()
     .AddTypeExtension<CartQueries>()
     .AddTypeExtension<CartMutations>()
+    .AddTypeExtension<AnnouncementQueries>()
+    .AddTypeExtension<AnnouncementMutations>()
     .AddSorting()
     .AddAuthorization();
 

@@ -1,5 +1,7 @@
 using System.Net;
 using GUtv_backend_dotnet.Models;
+using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
 
 namespace GUtv_backend_dotnet.Services.Telegram.Commands;
 
@@ -35,6 +37,22 @@ public static class TelegramText
     public static string BookingTitle(int bookingId)
     {
         return $"<b>Бронирование #{bookingId}</b>";
+    }
+
+    public static (string Text, MessageEntity[] Entities) AnnouncementMessage(
+        string authorName, string title, string body, string prefix = "", string suffix = "")
+    {
+        var author = string.IsNullOrWhiteSpace(authorName) ? "Администратор" : authorName.Trim();
+        if (author.Length > 200)
+            author = author[..200] + "…";
+        var introduction = $"{prefix}📢 Объявление от {author}\n\n";
+        var text = $"{introduction}{title}\n\n{body}{suffix}";
+        return (text, [new MessageEntity
+        {
+            Type = MessageEntityType.Bold,
+            Offset = introduction.Length,
+            Length = title.Length
+        }]);
     }
 
     public static string GetRole(UserRole role)

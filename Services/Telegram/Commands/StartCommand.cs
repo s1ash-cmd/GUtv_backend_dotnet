@@ -49,7 +49,7 @@ public class StartCommand(UserService userService, ILogger<StartCommand> logger)
             chatId: chatId,
             text: $"👋 <b>Здравствуйте, {TelegramText.Escape(user.Name)}!</b>\n\nВыберите действие:",
             parseMode: ParseMode.Html,
-            replyMarkup: TelegramKeyboards.MainMenu,
+            replyMarkup: TelegramKeyboards.ForUser(user),
             cancellationToken: cancellationToken);
     }
 
@@ -69,7 +69,7 @@ public class StartCommand(UserService userService, ILogger<StartCommand> logger)
                       $"💬 <b>Telegram:</b> @{TelegramText.Escape(username)}\n\n" +
                       "Теперь доступны меню, профиль и бронирования.",
                 parseMode: ParseMode.Html,
-                replyMarkup: TelegramKeyboards.MainMenu,
+                replyMarkup: TelegramKeyboards.ForUser(user),
                 cancellationToken: cancellationToken);
         }
         catch (GraphQLException ex)

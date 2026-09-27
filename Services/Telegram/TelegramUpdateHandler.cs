@@ -53,6 +53,13 @@ public class TelegramUpdateHandler
         _logger.LogInformation("Telegram message from @{Username} ({ChatId}): {Message}", username ?? "unknown", chatId, messageText ?? update.Message.Type.ToString());
         await UpdateUsername(chatId, username);
 
+        var announcements = _serviceProvider.GetRequiredService<AnnouncementBotHandler>();
+        if (await announcements.HandleMessageAsync(botClient, message, cancellationToken))
+        {
+            _pendingComments.TryRemove(chatId, out _);
+            return;
+        }
+
         if (_pendingComments.TryGetValue(chatId, out var pendingComment))
         {
             if (pendingComment.ExpiresAt <= DateTimeOffset.UtcNow ||
@@ -130,6 +137,12 @@ public class TelegramUpdateHandler
                 return;
 
             var data = callbackQuery.Data;
+            if (data?.StartsWith("announce:", StringComparison.Ordinal) == true)
+            {
+                await _serviceProvider.GetRequiredService<AnnouncementBotHandler>()
+                    .HandleCallbackAsync(botClient, callbackQuery, cancellationToken);
+                return;
+            }
             var chatId = callbackQuery.Message?.Chat.Id;
             if (chatId is null || data?.StartsWith("booking:", StringComparison.Ordinal) != true)
                 return;
@@ -153,6 +166,7 @@ public class TelegramUpdateHandler
             }
 
             var action = parts[1];
+            _serviceProvider.GetRequiredService<AnnouncementBotHandler>().CancelDraft(chatId.Value);
             var actionText = action == "approve" ? "одобрения" : "отклонения";
 
             var promptMessage = await botClient.SendMessage(

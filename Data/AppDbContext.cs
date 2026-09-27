@@ -13,10 +13,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<EqPhoto> EqPhotos => Set<EqPhoto>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartItem> CartItems => Set<CartItem>();
+    public DbSet<Announcement> Announcements => Set<Announcement>();
+    public DbSet<AnnouncementDelivery> AnnouncementDeliveries => Set<AnnouncementDelivery>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<Announcement>().HasIndex(a => a.RequestId).IsUnique();
+        modelBuilder.Entity<Announcement>().Property(a => a.Title).HasMaxLength(100);
+        modelBuilder.Entity<Announcement>().Property(a => a.Body).HasMaxLength(3000);
+        modelBuilder.Entity<AnnouncementDelivery>().HasKey(d => new { d.AnnouncementId, d.ChatId });
+        modelBuilder.Entity<AnnouncementDelivery>().HasIndex(d => new { d.Failed, d.SentAt, d.NextAttemptAt });
+        modelBuilder.Entity<AnnouncementDelivery>().Property(d => d.LastError).HasMaxLength(1000);
+        modelBuilder.Entity<AnnouncementDelivery>().HasOne(d => d.Announcement).WithMany()
+            .HasForeignKey(d => d.AnnouncementId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<User>()
             .Property(u => u.NormalizedLogin)

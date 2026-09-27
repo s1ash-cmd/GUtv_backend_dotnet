@@ -37,6 +37,7 @@ public class ProfileCommand(UserService userService) : ICommand
             chatId: message.Chat.Id,
             text: response.ToString(),
             parseMode: ParseMode.Html,
+            replyMarkup: TelegramKeyboards.ForUser(user),
             cancellationToken: cancellationToken);
     }
 }

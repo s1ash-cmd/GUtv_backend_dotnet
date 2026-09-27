@@ -50,6 +50,7 @@ public class LinkCommand(UserService userService, ILogger<LinkCommand> logger) :
                       $"🛡 <b>Роль:</b> {TelegramText.Escape(TelegramText.GetRole(user.Role))}\n\n" +
                       "Используйте /start для вызова меню.",
                 parseMode: ParseMode.Html,
+                replyMarkup: TelegramKeyboards.ForUser(user),
                 cancellationToken: cancellationToken);
         }
         catch (GraphQLException ex)

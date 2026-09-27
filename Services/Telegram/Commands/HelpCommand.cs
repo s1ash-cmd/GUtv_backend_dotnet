@@ -17,6 +17,9 @@ public class HelpCommand : ICommand
         response.AppendLine("<b>Команды:</b>");
         response.AppendLine("<code>/start</code> - главное меню");
         response.AppendLine("<code>/link КОД</code> - привязать аккаунт");
+        response.AppendLine("<code>/announce</code> - создать объявление (для администраторов)");
+        response.AppendLine("<code>/cancel</code> - отменить подготовку объявления");
+        response.AppendLine("Новые объявления приходят автоматически после привязки аккаунта.");
         response.AppendLine();
         response.AppendLine("Если меню потерялось, введите <code>/start</code>.");
 
