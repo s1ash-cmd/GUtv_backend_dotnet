@@ -66,4 +66,27 @@ public class AnnouncementService(AppDbContext db)
         await transaction.CommitAsync(ct);
         return announcement;
     }
+
+    public async Task<bool> DeleteAsync(int announcementId, int adminId, CancellationToken ct)
+    {
+        if (announcementId <= 0)
+            throw new GraphQLException("Некорректный идентификатор объявления");
+
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        // Wait for an in-progress delivery before removing its announcement and queued messages.
+        await db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(5, 0)", ct);
+
+        var admin = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == adminId, ct);
+        if (admin is null || admin.Banned || admin.Role != UserRole.Admin)
+            throw new GraphQLException("Удалять объявления могут только действующие администраторы");
+
+        var announcement = await db.Announcements.SingleOrDefaultAsync(a => a.Id == announcementId, ct);
+        if (announcement is null)
+            return false;
+
+        db.Announcements.Remove(announcement);
+        await db.SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
+        return true;
+    }
 }

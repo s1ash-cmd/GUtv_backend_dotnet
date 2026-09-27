@@ -14,4 +14,11 @@ public class AnnouncementMutations
         AnnouncementService service, CancellationToken cancellationToken) =>
         service.PublishAsync(equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User),
             requestId, title, body, cancellationToken);
+
+    [Authorize(Roles = ["Admin"])]
+    public Task<bool> DeleteAnnouncement(
+        int id, IHttpContextAccessor httpContextAccessor, EquipmentService equipmentService,
+        AnnouncementService service, CancellationToken cancellationToken) =>
+        service.DeleteAsync(id,
+            equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User), cancellationToken);
 }
