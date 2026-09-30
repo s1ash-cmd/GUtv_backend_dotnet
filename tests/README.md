@@ -10,6 +10,18 @@ The tests cover cart migration discovery and SQL ordering, current-role authoriz
 calendar privacy, and atomic refresh-token consumption and rollback. They do not use
 production configuration, contact Telegram, or open a PostgreSQL connection.
 
+Equipment tests enforce one optional-description contract for create, full update,
+and properties update: empty/null values normalize to an empty string; a nonempty
+trimmed description needs at least five characters. Runtime GraphQL tests also check
+that description can be omitted while name/category stay required.
+
+Telegram tests use the real TelegramBotClient with a fake HTTP handler. They check
+owner creation/update notifications (including another administrator editing),
+status notifications, missing chat IDs, isolated delivery failures and bounded
+Unicode/plain-text summaries. Direct and cart create/update paths run against SQLite
+transactions; the handler records that sending happens after commit. Failed operations
+send nothing. PostgreSQL advisory-lock statements are suppressed in those SQLite tests.
+
 Refresh tests use an isolated SQLite database in memory. Its test-only context skips
 the PostgreSQL-specific computed login column. A command interceptor exercises the
 case where a token changes between lookup and consumption.

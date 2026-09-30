@@ -49,16 +49,50 @@ public class TelegramNotificationService(
 
             foreach (var admin in admins)
             {
-                await botClient.SendMessage(
-                    chatId: admin.TelegramChatId!.Value,
-                    text: message,
-                    parseMode: ParseMode.Html,
-                    replyMarkup: keyboard);
+                try
+                {
+                    await botClient.SendMessage(
+                        chatId: admin.TelegramChatId!.Value,
+                        text: message,
+                        parseMode: ParseMode.Html,
+                        replyMarkup: keyboard);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Telegram notification failed for admin {UserId}, booking {BookingId}",
+                        admin.Id, booking.Id);
+                }
             }
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Telegram admin notification failed for booking {BookingId}", booking.Id);
+        }
+    }
+
+    public Task NotifyUserBookingCreated(Booking booking) =>
+        NotifyUserBookingSubmitted(booking, isUpdated: false, actorUserId: null);
+
+    public Task NotifyUserBookingUpdated(Booking booking, int actorUserId) =>
+        NotifyUserBookingSubmitted(booking, isUpdated: true, actorUserId);
+
+    private async Task NotifyUserBookingSubmitted(Booking booking, bool isUpdated, int? actorUserId)
+    {
+        try
+        {
+            var loadedBooking = await LoadBooking(booking.Id);
+            if (loadedBooking.User.TelegramChatId is null or <= 0)
+                return;
+
+            // Always notify the persisted owner, including when an admin edits their booking.
+            // Plain text makes bounded summaries safe for arbitrary HTML-like user input.
+            await botClient.SendMessage(
+                chatId: loadedBooking.User.TelegramChatId.Value,
+                text: BuildUserBookingSubmittedMessage(loadedBooking, isUpdated, actorUserId));
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Telegram user submission notification failed for booking {BookingId}", booking.Id);
         }
     }
 
@@ -141,6 +175,38 @@ public class TelegramNotificationService(
             message.AppendLine($"\n💬 <b>Комментарий администратора:</b> {TelegramText.Escape(booking.AdminComment)}");
 
         return message.ToString();
+    }
+
+    private static string BuildUserBookingSubmittedMessage(Booking booking, bool isUpdated, int? actorUserId)
+    {
+        var message = new StringBuilder();
+        message.AppendLine($"{(isUpdated ? "✏️" : "🆕")} Бронирование #{booking.Id}");
+        message.AppendLine(isUpdated
+            ? "Ваша заявка изменена."
+            : "Ваша заявка создана.");
+        if (isUpdated && actorUserId != booking.UserId)
+            message.AppendLine("Изменения внесены администратором.");
+        message.AppendLine();
+        message.AppendLine($"📝 Причина: {LimitPlainText(booking.Reason.Trim(), 1000)}");
+        message.AppendLine($"📅 Период: {TelegramText.Period(booking.StartTime, booking.EndTime)}");
+        message.AppendLine($"{TelegramText.GetStatusEmoji(booking.Status)} Статус: {TelegramText.GetStatusName(booking.Status)}");
+        message.AppendLine();
+        message.AppendLine("📦 Оборудование:");
+        foreach (var item in booking.BookingItems.OrderBy(item => item.Id).Take(10))
+            message.AppendLine($"• {LimitPlainText(item.EqItem.EqModel.Name.Trim(), 64)} ({LimitPlainText(item.EqItem.InventoryNumber.Trim(), 32)})");
+        if (booking.BookingItems.Count > 10)
+            message.AppendLine($"… и ещё {booking.BookingItems.Count - 10} экземпляров.");
+        if (!string.IsNullOrWhiteSpace(booking.Comment))
+            message.AppendLine($"\n💬 Комментарий: {LimitPlainText(booking.Comment.Trim(), 500)}");
+        return LimitPlainText(message.ToString(), 4000);
+    }
+
+    private static string LimitPlainText(string value, int maxLength)
+    {
+        if (value.Length <= maxLength) return value;
+        var length = maxLength - 1;
+        if (char.IsHighSurrogate(value[length - 1])) length--;
+        return value[..length] + "…";
     }
 
     private static List<string> ReadWarnings(string warningsJson)

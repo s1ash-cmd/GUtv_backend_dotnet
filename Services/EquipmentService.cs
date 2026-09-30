@@ -13,6 +13,7 @@ public class EquipmentService(AppDbContext db)
     {
         ValidateModelInput(input);
 
+        var normalizedDescription = NormalizeDescription(input.Description);
         var normalizedName = input.Name.Trim();
         var exists = await db.EqModels.AnyAsync(m => EF.Functions.ILike(m.Name, normalizedName));
         if (exists)
@@ -21,7 +22,7 @@ public class EquipmentService(AppDbContext db)
         var model = new EqModel
         {
             Name = normalizedName,
-            Description = input.Description.Trim(),
+            Description = normalizedDescription,
             Category = input.Category,
             Access = ResolveAccess(normalizedName, input.Osnova),
             AttributesJson = NormalizeJson(input.AttributesJson)
@@ -132,6 +133,7 @@ public class EquipmentService(AppDbContext db)
 
         ValidateModelInput(input);
 
+        var normalizedDescription = NormalizeDescription(input.Description);
         var model = await db.EqModels.FindAsync(id)
             ?? throw new GraphQLException($"Модель оборудования с ID {id} не найдена");
 
@@ -142,7 +144,7 @@ public class EquipmentService(AppDbContext db)
             throw new GraphQLException("Оборудование с таким названием уже существует");
 
         model.Name = normalizedName;
-        model.Description = input.Description.Trim();
+        model.Description = normalizedDescription;
         model.Category = input.Category;
         model.Access = ResolveAccess(normalizedName, input.Osnova);
         model.AttributesJson = NormalizeJson(input.AttributesJson);
@@ -159,6 +161,7 @@ public class EquipmentService(AppDbContext db)
         if (string.IsNullOrWhiteSpace(input.Name))
             throw new GraphQLException("Название не может быть пустым");
 
+        var normalizedDescription = NormalizeDescription(input.Description);
         var model = await db.EqModels.FindAsync(id)
             ?? throw new GraphQLException($"Модель оборудования с ID {id} не найдена");
 
@@ -169,7 +172,7 @@ public class EquipmentService(AppDbContext db)
             throw new GraphQLException("Оборудование с таким названием уже существует");
 
         model.Name = normalizedName;
-        model.Description = input.Description?.Trim() ?? string.Empty;
+        model.Description = normalizedDescription;
         if (input.AttributesJson is not null)
             model.AttributesJson = NormalizeJson(input.AttributesJson);
 
@@ -420,15 +423,21 @@ public class EquipmentService(AppDbContext db)
     {
         if (string.IsNullOrWhiteSpace(input.Name))
             throw new GraphQLException("Название не может быть пустым");
+    }
 
-        if (string.IsNullOrWhiteSpace(input.Description))
-            throw new GraphQLException("Описание не может быть пустым");
+    private static string NormalizeDescription(string? description)
+    {
+        var normalizedDescription = description?.Trim() ?? string.Empty;
+        if (normalizedDescription.Length is > 0 and < 5)
+            throw new GraphQLException("Описание должно содержать не менее 5 символов");
+
+        return normalizedDescription;
     }
 }
 
 public record CreateEqModelInput(
     string Name,
-    string Description,
+    string? Description,
     EqCategory Category,
     string? AttributesJson,
     bool Osnova = false

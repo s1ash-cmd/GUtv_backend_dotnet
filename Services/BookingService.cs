@@ -138,7 +138,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             }
         }
 
-        await NotifyBookingUpdatedAsync(booking);
+        await NotifyBookingUpdatedAsync(booking, actorUserId);
         return booking;
     }
 
@@ -243,11 +243,17 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return await GetBookingEntityByIdAsync(booking.Id);
     }
 
-    internal Task NotifyBookingCreatedAsync(Booking booking) =>
-        telegramNotificationService.NotifyAdminsNewBooking(booking);
+    internal async Task NotifyBookingCreatedAsync(Booking booking)
+    {
+        await telegramNotificationService.NotifyAdminsNewBooking(booking);
+        await telegramNotificationService.NotifyUserBookingCreated(booking);
+    }
 
-    internal Task NotifyBookingUpdatedAsync(Booking booking) =>
-        telegramNotificationService.NotifyAdminsBookingUpdated(booking);
+    internal async Task NotifyBookingUpdatedAsync(Booking booking, int actorUserId)
+    {
+        await telegramNotificationService.NotifyAdminsBookingUpdated(booking);
+        await telegramNotificationService.NotifyUserBookingUpdated(booking, actorUserId);
+    }
 
     private void RequireTransaction()
     {

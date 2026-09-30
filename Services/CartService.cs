@@ -41,7 +41,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
     public async Task<Booking> UpdateBookingFromCartAsync(int userId, int bookingId, bool isAdmin)
     {
         var booking = await WithCartLockAsync(userId, () => UpdateBookingFromCartCoreAsync(userId, bookingId, isAdmin));
-        await bookingService.NotifyBookingUpdatedAsync(booking);
+        await bookingService.NotifyBookingUpdatedAsync(booking, userId);
         return booking;
     }
 
