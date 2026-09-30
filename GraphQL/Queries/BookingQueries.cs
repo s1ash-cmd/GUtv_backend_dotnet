@@ -30,7 +30,7 @@ public class BookingQueries
         bookingService.GetAllBookingsAsync();
 
     [Authorize]
-    public Task<List<Booking>> GetCalendarBookings(
+    public Task<List<CalendarBookingPayload>> GetCalendarBookings(
         DateTime? start,
         DateTime? end,
         BookingService bookingService) =>

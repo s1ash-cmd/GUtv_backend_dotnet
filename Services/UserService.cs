@@ -114,6 +114,42 @@ public class UserService
             u.RefreshTokenExpiryTime > DateTime.UtcNow);
     }
 
+    public async Task<RefreshedSession> RotateRefreshTokenAsync(string refreshToken, AuthService authService)
+    {
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        try
+        {
+            var user = await GetByRefreshTokenAsync(refreshToken)
+                ?? throw new GraphQLException("Недействительный refresh token");
+            if (user.Banned)
+                throw new GraphQLException("Пользователь заблокирован");
+
+            var newRefreshToken = authService.GenerateRefreshToken();
+            var now = DateTime.UtcNow;
+            // Compare-and-swap consumes the old token exactly once, including requests
+            // from clients that cannot coordinate refreshes with browser Web Locks.
+            var updated = await _db.Users
+                .Where(u => u.Id == user.Id && u.RefreshToken == refreshToken &&
+                    u.RefreshTokenExpiryTime > now && !u.Banned)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(u => u.RefreshToken, newRefreshToken)
+                    .SetProperty(u => u.RefreshTokenExpiryTime, now.AddDays(7)));
+            if (updated != 1)
+                throw new GraphQLException("Недействительный refresh token");
+
+            await _db.Entry(user).ReloadAsync();
+            user = await EnsureRoleUpgradeOnAuthorizationAsync(user);
+            var accessToken = authService.GenerateAccessToken(user);
+            await transaction.CommitAsync();
+            return new RefreshedSession(user, accessToken, newRefreshToken);
+        }
+        catch
+        {
+            _db.ChangeTracker.Clear();
+            throw;
+        }
+    }
+
     public async Task<User?> GetByTelegramChatIdAsync(long chatId)
     {
         return await _db.Users.FirstOrDefaultAsync(u => u.TelegramChatId == chatId);
@@ -235,3 +271,5 @@ public class UserService
         return Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
     }
 }
+
+public record RefreshedSession(User User, string AccessToken, string RefreshToken);

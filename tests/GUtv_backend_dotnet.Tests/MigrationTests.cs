@@ -1,0 +1,73 @@
+using GUtv_backend_dotnet.Data;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+
+namespace GUtv_backend_dotnet.Tests;
+
+public class MigrationTests
+{
+    private const string CartMigration = "20260412171402_AddCartSync";
+    private const string CartEditingMigration = "20260828101054_AddCartEditingBooking";
+
+    [Fact]
+    public void CartSchemaMigrationIsDiscoverableBeforeItsDependentMigration()
+    {
+        using var db = CreateContext();
+        var migrations = db.Database.GetMigrations().ToList();
+
+        Assert.Contains(CartMigration, migrations);
+        Assert.True(migrations.IndexOf(CartMigration) < migrations.IndexOf(CartEditingMigration));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FullMigrationScriptCreatesCartTablesBeforeAlteringThem(bool idempotent)
+    {
+        using var db = CreateContext();
+        var options = idempotent ? MigrationsSqlGenerationOptions.Idempotent : MigrationsSqlGenerationOptions.Default;
+        var script = db.GetService<IMigrator>().GenerateScript(options: options);
+
+        var cartsCreation = script.IndexOf("CREATE TABLE IF NOT EXISTS \"Carts\"", StringComparison.Ordinal);
+        var itemsCreation = script.IndexOf("CREATE TABLE IF NOT EXISTS \"CartItems\"", StringComparison.Ordinal);
+        var cartsAlteration = script.IndexOf("ALTER TABLE \"Carts\" ADD COLUMN", StringComparison.Ordinal);
+
+        Assert.True(cartsCreation >= 0, "The complete script must create Carts on a fresh database.");
+        Assert.True(itemsCreation > cartsCreation, "CartItems depends on Carts.");
+        Assert.True(cartsAlteration > itemsCreation, "The editing column must be added after both cart tables exist.");
+        Assert.Contains($"VALUES ('{CartMigration}'", script);
+    }
+
+    [Fact]
+    public void CartMigrationCanAdoptManuallyCreatedTablesWithoutDroppingData()
+    {
+        using var db = CreateContext();
+        var script = db.GetService<IMigrator>().GenerateScript(
+            "20260316193142_eqPhoto", CartMigration);
+
+        Assert.Contains("CREATE TABLE IF NOT EXISTS \"Carts\"", script);
+        Assert.Contains("CREATE TABLE IF NOT EXISTS \"CartItems\"", script);
+        Assert.Contains("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_Carts_UserId\"", script);
+        Assert.Contains("CREATE UNIQUE INDEX IF NOT EXISTS \"IX_CartItems_CartId_EqModelId\"", script);
+        Assert.DoesNotContain("DROP TABLE", script);
+        Assert.DoesNotContain("TRUNCATE", script);
+        Assert.DoesNotContain("DELETE FROM", script);
+    }
+
+    [Fact]
+    public void CartEditingMigrationCanAdoptAnExistingEditingColumn()
+    {
+        using var db = CreateContext();
+        var script = db.GetService<IMigrator>().GenerateScript(
+            "20260603120000_AddUserAvatarSeed", CartEditingMigration);
+
+        Assert.Contains("ALTER TABLE \"Carts\" ADD COLUMN IF NOT EXISTS \"EditingBookingId\" integer", script);
+    }
+
+    private static AppDbContext CreateContext() => new(
+        new DbContextOptionsBuilder<AppDbContext>()
+            // Generating SQL and enumerating migration metadata never opens a connection.
+            .UseNpgsql("Host=localhost;Database=migration_regression_unused;Username=unused;Password=unused")
+            .Options);
+}

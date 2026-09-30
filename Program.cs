@@ -120,15 +120,20 @@ app.Use(async (context, next) =>
         }
 
         var db = context.RequestServices.GetRequiredService<AppDbContext>();
-        var isActiveUser = await db.Users
+        var currentUser = await db.Users
             .AsNoTracking()
-            .AnyAsync(user => user.Id == userId && !user.Banned);
+            .Where(user => user.Id == userId)
+            .Select(user => new { user.Banned, user.Role })
+            .SingleOrDefaultAsync(context.RequestAborted);
 
-        if (!isActiveUser)
+        if (currentUser is null || currentUser.Banned)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
+
+        // Authorize against current permissions, even while an older JWT is still valid.
+        CurrentUserClaims.SetRole(context.User, currentUser.Role);
     }
 
     await next();

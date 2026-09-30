@@ -58,22 +58,8 @@ public class UserMutation
         UserService userService,
         AuthService authService)
     {
-        var user = await userService.GetByRefreshTokenAsync(refreshToken);
-
-        if (user == null)
-            throw new GraphQLException("Недействительный refresh token");
-
-        if (user.Banned)
-            throw new GraphQLException("Пользователь заблокирован");
-
-        user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
-
-        var newAccessToken = authService.GenerateAccessToken(user);
-        var newRefreshToken = authService.GenerateRefreshToken();
-
-        await userService.SaveRefreshTokenAsync(user.Id, newRefreshToken);
-
-        return new AuthPayload(user, newAccessToken, newRefreshToken);
+        var session = await userService.RotateRefreshTokenAsync(refreshToken, authService);
+        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
     }
 
     [Authorize(Roles = ["Admin"])]

@@ -283,9 +283,9 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return await FindBookingWithIncludes().ToListAsync();
     }
 
-    public async Task<List<Booking>> GetCalendarBookingsAsync(DateTime? start = null, DateTime? end = null)
+    public async Task<List<CalendarBookingPayload>> GetCalendarBookingsAsync(DateTime? start = null, DateTime? end = null)
     {
-        var query = FindBookingWithIncludes()
+        var query = db.Bookings.AsNoTracking()
             .Where(b => b.Status == BookingStatus.Pending || b.Status == BookingStatus.Approved);
 
         if (start.HasValue && end.HasValue)
@@ -293,6 +293,18 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         return await query
             .OrderBy(b => b.StartTime)
+            .Select(b => new CalendarBookingPayload(
+                b.Id,
+                b.User.Name,
+                b.User.TelegramUsername,
+                b.Reason,
+                b.StartTime,
+                b.EndTime,
+                b.Status,
+                b.BookingItems.OrderBy(item => item.Id)
+                    .Select(item => new CalendarEquipmentPayload(
+                        item.Id, item.EqItem.EqModel.Name, item.EqItem.InventoryNumber))
+                    .ToList()))
             .ToListAsync();
     }
 

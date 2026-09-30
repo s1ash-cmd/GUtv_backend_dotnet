@@ -10,11 +10,11 @@ namespace GUtv_backend_dotnet.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<int>(
-                name: "EditingBookingId",
-                table: "Carts",
-                type: "integer",
-                nullable: true);
+            // Cart tables may predate their migration history after a manual setup.
+            migrationBuilder.Sql(
+                """
+                ALTER TABLE "Carts" ADD COLUMN IF NOT EXISTS "EditingBookingId" integer;
+                """);
         }
 
         /// <inheritdoc />
