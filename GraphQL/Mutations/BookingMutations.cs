@@ -54,7 +54,7 @@ public class BookingMutations
         var admin = await GetCurrentUserAsync(httpContextAccessor, equipmentService, userService);
         return await bookingService.ApproveBookingAsync(
             bookingId,
-            FormatAdminComment(admin, adminComment));
+            BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     [Authorize(Roles = ["Admin"])]
@@ -71,7 +71,7 @@ public class BookingMutations
             bookingId,
             admin.Id,
             true,
-            FormatAdminComment(admin, adminComment));
+            BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     [Authorize(Roles = ["Admin"])]
@@ -100,7 +100,7 @@ public class BookingMutations
             userId,
             isAdmin,
             isAdmin && admin is not null
-                ? FormatAdminComment(admin, adminComment)
+                ? BookingAdminCommentFormatter.Format(admin, adminComment)
                 : adminComment);
     }
 
@@ -123,7 +123,7 @@ public class BookingMutations
 
         return await bookingService.ApproveBookingAsync(
             bookingId,
-            FormatAdminComment(admin, adminComment));
+            BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     public async Task<Booking> RejectBookingByTelegram(
@@ -147,14 +147,7 @@ public class BookingMutations
             bookingId,
             admin.Id,
             true,
-            FormatAdminComment(admin, adminComment));
-    }
-
-    private static string? FormatAdminComment(User admin, string? comment)
-    {
-        return string.IsNullOrWhiteSpace(comment)
-            ? admin.Name
-            : $"{admin.Name}: {comment.Trim()}";
+            BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     private static async Task<User> GetCurrentUserAsync(

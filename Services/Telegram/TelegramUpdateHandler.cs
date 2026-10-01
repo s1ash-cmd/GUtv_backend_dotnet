@@ -268,7 +268,7 @@ public class TelegramUpdateHandler
                 return;
 
             var comment = message.Text == "-" ? null : message.Text;
-            var adminComment = FormatAdminComment(admin, comment);
+            var adminComment = BookingAdminCommentFormatter.Format(admin, comment);
 
             if (pendingData.Action == "approve")
             {
@@ -316,13 +316,6 @@ public class TelegramUpdateHandler
         {
             _logger.LogError(ex, "Telegram booking confirmation message failed");
         }
-    }
-
-    private static string? FormatAdminComment(Models.User admin, string? comment)
-    {
-        return string.IsNullOrWhiteSpace(comment)
-            ? admin.Name
-            : $"{admin.Name}: {comment.Trim()}";
     }
 
     private async Task UpdateUsername(long chatId, string? username)
