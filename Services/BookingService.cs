@@ -289,6 +289,60 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return await FindBookingWithIncludes().ToListAsync();
     }
 
+    public Task<BookingPagePayload> GetAllBookingsPageAsync(
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null,
+        bool oldestFirst = false) =>
+        GetBookingsPageAsync(FindBookingWithIncludes(), page, search, status, oldestFirst);
+
+    public Task<BookingPagePayload> GetBookingsPageByUserAsync(
+        int userId,
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null,
+        bool oldestFirst = false) =>
+        GetBookingsPageAsync(FindBookingWithIncludes().Where(b => b.UserId == userId),
+            page, search, status, oldestFirst);
+
+    private async Task<BookingPagePayload> GetBookingsPageAsync(
+        IQueryable<Booking> query,
+        int page,
+        string? search,
+        BookingStatus? status,
+        bool oldestFirst)
+    {
+        const int pageSize = 30;
+        if (page < 1)
+            throw new GraphQLException("Номер страницы должен быть больше 0");
+
+        if (status.HasValue)
+            query = query.Where(b => b.Status == status.Value);
+
+        var searchTerm = search?.Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(searchTerm))
+        {
+            var searchId = int.TryParse(searchTerm, out var id) ? id : (int?)null;
+            // Contains is translated to a literal substring search, including '%' and '_'.
+            query = query.Where(b =>
+                (searchId.HasValue && b.Id == searchId.Value) ||
+                b.User.Name.ToLower().Contains(searchTerm) ||
+                b.User.Login.ToLower().Contains(searchTerm) ||
+                b.Reason.ToLower().Contains(searchTerm) ||
+                b.BookingItems.Any(item => item.EqItem.EqModel.Name.ToLower().Contains(searchTerm)));
+        }
+
+        var totalCount = await query.CountAsync();
+        var lastPage = totalCount == 0 ? 1 : (totalCount - 1) / pageSize + 1;
+        page = Math.Min(page, lastPage);
+        var orderedQuery = oldestFirst
+            ? query.OrderBy(b => b.CreationTime).ThenBy(b => b.Id)
+            : query.OrderByDescending(b => b.CreationTime).ThenByDescending(b => b.Id);
+        var items = await orderedQuery.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
+
+        return new BookingPagePayload(items, totalCount, page, pageSize);
+    }
+
     public async Task<List<CalendarBookingPayload>> GetCalendarBookingsAsync(DateTime? start = null, DateTime? end = null)
     {
         var query = db.Bookings.AsNoTracking()

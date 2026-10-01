@@ -29,6 +29,15 @@ public class BookingQueries
     public Task<List<Booking>> GetAllBookings(BookingService bookingService) =>
         bookingService.GetAllBookingsAsync();
 
+    [Authorize(Roles = ["Admin"])]
+    public Task<BookingPagePayload> GetAllBookingsPage(
+        BookingService bookingService,
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null,
+        bool oldestFirst = false) =>
+        bookingService.GetAllBookingsPageAsync(page, search, status, oldestFirst);
+
     [Authorize]
     public Task<List<CalendarBookingPayload>> GetCalendarBookings(
         DateTime? start,
@@ -44,6 +53,20 @@ public class BookingQueries
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
         return bookingService.GetBookingsByUserAsync(userId);
+    }
+
+    [Authorize]
+    public Task<BookingPagePayload> GetMyBookingsPage(
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        BookingService bookingService,
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null,
+        bool oldestFirst = false)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return bookingService.GetBookingsPageByUserAsync(userId, page, search, status, oldestFirst);
     }
 
     [Authorize(Roles = ["Admin"])]
