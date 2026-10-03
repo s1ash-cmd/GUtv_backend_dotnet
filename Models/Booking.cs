@@ -4,6 +4,8 @@ public class Booking
 {
     public int Id { get; set; }
 
+    public int Revision { get; set; } = 1;
+
     public int UserId { get; set; }
     public User User { get; set; } = null!;
 

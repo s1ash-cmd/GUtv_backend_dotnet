@@ -65,6 +65,20 @@ public class MigrationTests
         Assert.Contains("ALTER TABLE \"Carts\" ADD COLUMN IF NOT EXISTS \"EditingBookingId\" integer", script);
     }
 
+    [Fact]
+    public void BookingRevisionMigrationPreservesExistingBookingsWithAnInitialRevision()
+    {
+        using var db = CreateContext();
+        var migration = Assert.Single(db.Database.GetMigrations(), name => name.EndsWith("_AddBookingRevision"));
+        var sql = db.GetService<IMigrator>().GenerateScript("20261001000000_ClearSyntheticAdminComments", migration);
+        Assert.Contains("ADD \"Revision\" integer NOT NULL DEFAULT 1", sql.Replace("ADD COLUMN", "ADD"));
+        Assert.DoesNotContain("DROP", sql);
+        var property = db.Model.FindEntityType(typeof(GUtv_backend_dotnet.Models.Booking))!.FindProperty("Revision")!;
+        Assert.True(property.IsConcurrencyToken);
+        Assert.Equal(1, property.GetDefaultValue());
+        Assert.False(db.Database.HasPendingModelChanges());
+    }
+
     private static AppDbContext CreateContext() => new(
         new DbContextOptionsBuilder<AppDbContext>()
             // Generating SQL and enumerating migration metadata never opens a connection.

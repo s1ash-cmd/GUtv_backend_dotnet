@@ -13,6 +13,7 @@ public class TelegramUpdateHandler
     private sealed record PendingComment(
         string Action,
         int BookingId,
+        int ExpectedRevision,
         int PromptMessageId,
         DateTimeOffset ExpiresAt);
 
@@ -148,20 +149,37 @@ public class TelegramUpdateHandler
                 return;
 
             var parts = data.Split(':');
-            if (parts.Length != 3 || !int.TryParse(parts[2], out var bookingId))
+            if (parts.Length != 4 || !int.TryParse(parts[2], out var bookingId) ||
+                !int.TryParse(parts[3], out var expectedRevision) || expectedRevision < 1 ||
+                parts[1] is not ("approve" or "reject"))
+            {
+                await botClient.AnswerCallbackQuery(callbackQuery.Id,
+                    "Это старая кнопка. Откройте актуальную заявку на сайте или используйте её новое уведомление.",
+                    showAlert: true, cancellationToken: cancellationToken);
                 return;
+            }
 
             using var scope = _serviceProvider.CreateScope();
             var userService = scope.ServiceProvider.GetRequiredService<UserService>();
             var admin = await userService.GetByTelegramChatIdAsync(chatId.Value);
 
-            if (admin?.Role != UserRole.Admin)
+            if (admin is null || admin.Banned || admin.Role != UserRole.Admin)
             {
                 await botClient.AnswerCallbackQuery(
                     callbackQuery.Id,
                     "У вас нет прав для этого действия",
                     showAlert: true,
                     cancellationToken: cancellationToken);
+                return;
+            }
+
+            var bookingService = scope.ServiceProvider.GetRequiredService<BookingService>();
+            var booking = await bookingService.GetBookingByIdAsync(bookingId, admin.Id, true);
+            if (booking.Revision != expectedRevision || booking.Status != BookingStatus.Pending)
+            {
+                await botClient.AnswerCallbackQuery(callbackQuery.Id,
+                    "Заявка уже изменилась. Откройте её актуальное уведомление или карточку на сайте.",
+                    showAlert: true, cancellationToken: cancellationToken);
                 return;
             }
 
@@ -179,6 +197,7 @@ public class TelegramUpdateHandler
             _pendingComments[chatId.Value] = new PendingComment(
                 action,
                 bookingId,
+                expectedRevision,
                 promptMessage.MessageId,
                 DateTimeOffset.UtcNow.AddMinutes(10));
 
@@ -264,20 +283,20 @@ public class TelegramUpdateHandler
             var userService = scope.ServiceProvider.GetRequiredService<UserService>();
 
             var admin = await userService.GetByTelegramChatIdAsync(chatId);
-            if (admin is null)
-                return;
+            if (admin is null || admin.Banned || admin.Role != UserRole.Admin)
+                throw new GraphQLException("У вас нет прав для этого действия");
 
             var comment = message.Text == "-" ? null : message.Text;
             var adminComment = BookingAdminCommentFormatter.Format(admin, comment);
 
             if (pendingData.Action == "approve")
             {
-                await bookingService.ApproveBookingAsync(pendingData.BookingId, adminComment);
+                await bookingService.ApproveBookingAsync(pendingData.BookingId, pendingData.ExpectedRevision, admin.Id, adminComment);
                 successMessage = $"✅ {TelegramText.BookingTitle(pendingData.BookingId)}\nОдобрено";
             }
             else
             {
-                await bookingService.CancelBookingAsync(pendingData.BookingId, admin.Id, true, adminComment);
+                await bookingService.CancelBookingAsync(pendingData.BookingId, admin.Id, true, pendingData.ExpectedRevision, adminComment);
                 successMessage = $"❌ {TelegramText.BookingTitle(pendingData.BookingId)}\nОтклонено";
             }
 

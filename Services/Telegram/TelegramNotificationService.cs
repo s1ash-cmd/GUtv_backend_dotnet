@@ -30,7 +30,7 @@ public class TelegramNotificationService(
         try
         {
             var admins = await db.Users
-                .Where(u => u.Role == UserRole.Admin && u.TelegramChatId > 0)
+                .Where(u => u.Role == UserRole.Admin && !u.Banned && u.TelegramChatId > 0)
                 .ToListAsync();
 
             if (admins.Count == 0)
@@ -42,8 +42,8 @@ public class TelegramNotificationService(
             {
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("✅ Подтвердить", $"booking:approve:{loadedBooking.Id}"),
-                    InlineKeyboardButton.WithCallbackData("❌ Отклонить", $"booking:reject:{loadedBooking.Id}")
+                    InlineKeyboardButton.WithCallbackData("✅ Подтвердить", $"booking:approve:{loadedBooking.Id}:{loadedBooking.Revision}"),
+                    InlineKeyboardButton.WithCallbackData("❌ Отклонить", $"booking:reject:{loadedBooking.Id}:{loadedBooking.Revision}")
                 }
             });
 
@@ -135,21 +135,20 @@ public class TelegramNotificationService(
             ? "<b>Заявка изменена и снова ожидает решения</b>"
             : "<b>Новая заявка ожидает решения</b>");
         message.AppendLine();
-        message.AppendLine($"👤 <b>Пользователь:</b> {TelegramText.Escape(booking.User.Name)} (@{TelegramText.Escape(booking.User.TelegramUsername)})");
-        message.AppendLine($"📝 <b>Причина:</b> {TelegramText.Escape(booking.Reason)}");
+        message.AppendLine($"👤 <b>Пользователь:</b> {LimitHtmlText(booking.User.Name, 120)} (@{LimitHtmlText(booking.User.TelegramUsername, 80)})");
+        message.AppendLine($"📝 <b>Причина:</b> {LimitHtmlText(booking.Reason, 800)}");
         message.AppendLine($"📅 <b>Период:</b> {TelegramText.Period(booking.StartTime, booking.EndTime)}");
         message.AppendLine();
         message.AppendLine("📦 <b>Оборудование:</b>");
 
-        foreach (var item in booking.BookingItems)
-            message.AppendLine($"• {TelegramText.Escape(item.EqItem.EqModel.Name)} ({TelegramText.Escape(item.EqItem.InventoryNumber)})");
+        AppendEquipmentSummary(message, booking);
 
         if (!string.IsNullOrWhiteSpace(booking.Comment))
-            message.AppendLine($"\n💬 <b>Комментарий:</b> {TelegramText.Escape(booking.Comment)}");
+            message.AppendLine($"\n💬 <b>Комментарий:</b> {LimitHtmlText(booking.Comment, 600)}");
 
         var warnings = ReadWarnings(booking.WarningsJson);
         if (warnings.Count > 0)
-            message.AppendLine($"\n⚠️ <b>Предупреждения:</b> {TelegramText.Escape(string.Join(", ", warnings))}");
+            message.AppendLine($"\n⚠️ <b>Предупреждения:</b> {LimitHtmlText(string.Join(", ", warnings), 500)}");
 
         message.AppendLine($"\n{TelegramText.GetStatusEmoji(booking.Status)} <b>Статус:</b> {TelegramText.GetStatusName(booking.Status)}");
         return message.ToString();
@@ -163,18 +162,51 @@ public class TelegramNotificationService(
         message.AppendLine();
         message.AppendLine($"<s>{TelegramText.GetStatusName(oldStatus)}</s> → <b>{TelegramText.GetStatusName(booking.Status)}</b>");
         message.AppendLine();
-        message.AppendLine($"📝 <b>Причина:</b> {TelegramText.Escape(booking.Reason)}");
+        message.AppendLine($"📝 <b>Причина:</b> {LimitHtmlText(booking.Reason, 800)}");
         message.AppendLine($"📅 <b>Период:</b> {TelegramText.Period(booking.StartTime, booking.EndTime)}");
         message.AppendLine();
         message.AppendLine("📦 <b>Оборудование:</b>");
 
-        foreach (var item in booking.BookingItems)
-            message.AppendLine($"• {TelegramText.Escape(item.EqItem.EqModel.Name)} ({TelegramText.Escape(item.EqItem.InventoryNumber)})");
+        AppendEquipmentSummary(message, booking);
 
         if (!string.IsNullOrWhiteSpace(booking.AdminComment))
-            message.AppendLine($"\n💬 <b>Комментарий администратора:</b> {TelegramText.Escape(booking.AdminComment)}");
+            message.AppendLine($"\n💬 <b>Комментарий администратора:</b> {LimitHtmlText(booking.AdminComment, 600)}");
 
         return message.ToString();
+    }
+
+    private static void AppendEquipmentSummary(StringBuilder message, Booking booking)
+    {
+        const int visibleCount = 10;
+        foreach (var item in booking.BookingItems.OrderBy(item => item.Id).Take(visibleCount))
+            message.AppendLine($"• {LimitHtmlText(item.EqItem.EqModel.Name, 64)} ({LimitHtmlText(item.EqItem.InventoryNumber, 32)})");
+        if (booking.BookingItems.Count > visibleCount)
+            message.AppendLine($"… и ещё {booking.BookingItems.Count - visibleCount} экземпляров.");
+    }
+
+    private static string LimitHtmlText(string? value, int maxLength)
+    {
+        var text = string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+        var escaped = TelegramText.Escape(text);
+        if (escaped.Length <= maxLength) return escaped;
+
+        // Bound the escaped field, leaving whole HTML entities and UTF-16 pairs intact.
+        // The fixed field budgets and ten equipment rows keep the complete message below 4096.
+        var low = 2;
+        var high = Math.Min(text.Length, maxLength);
+        var best = "…";
+        while (low <= high)
+        {
+            var length = low + (high - low) / 2;
+            var candidate = TelegramText.Escape(LimitPlainText(text, length));
+            if (candidate.Length <= maxLength)
+            {
+                best = candidate;
+                low = length + 1;
+            }
+            else high = length - 1;
+        }
+        return best;
     }
 
     private static string BuildUserBookingSubmittedMessage(Booking booking, bool isUpdated, int? actorUserId)

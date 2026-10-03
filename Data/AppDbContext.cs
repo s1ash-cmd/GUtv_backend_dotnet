@@ -20,6 +20,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     {
         base.OnModelCreating(modelBuilder);
 
+        modelBuilder.Entity<Booking>().Property(b => b.Revision).HasDefaultValue(1).IsConcurrencyToken();
+
         modelBuilder.Entity<Announcement>().HasIndex(a => a.RequestId).IsUnique();
         modelBuilder.Entity<Announcement>().Property(a => a.Title).HasMaxLength(100);
         modelBuilder.Entity<Announcement>().Property(a => a.Body).HasMaxLength(3000);

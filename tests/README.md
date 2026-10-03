@@ -39,3 +39,18 @@ and rollback after failed JWT signing. No production database was used for this 
 The calendar API now returns `CalendarBookingPayload`, so deploy its matching frontend
 with the backend. It exposes the display name, optional Telegram username, reason,
 period, status and equipment summaries; it has no User/Booking entity navigation.
+
+## Booking decisions and review regressions
+
+Booking decisions require `expectedRevision` in the web and Telegram GraphQL API.
+The `AddBookingRevision` migration assigns revision 1 to existing bookings.
+Edits and status transitions increment it; decisions compare it while holding the
+booking lock, with an EF concurrency token as an additional guard. Deploy this
+backend before the matching frontend. Legacy Telegram buttons without a revision
+are rejected with instructions to use the website or a current notification.
+
+Tests exercise permission revocation/ban before and after Telegram prompts, stale
+versions for every decision, required GraphQL arguments, whitespace-only reasons,
+empty equipment models, and bounded admin/status notifications. All Telegram
+requests use a fake HTTP handler. Migration tests verify default revision and model
+snapshot consistency without connecting to PostgreSQL.

@@ -38,11 +38,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var user = await db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
-        if (input.StartTime >= input.EndTime)
-            throw new GraphQLException("Дата начала должна быть раньше даты окончания");
-
-        if (input.Equipment is null || input.Equipment.Count == 0)
-            throw new GraphQLException("Не выбрано оборудование для бронирования");
+        ValidateBookingInput(input);
 
         var warnings = new Dictionary<string, object>();
         if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
@@ -164,14 +160,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         if (!isAdmin && booking.Status is not (BookingStatus.Pending or BookingStatus.Approved))
             throw new GraphQLException("Изменить можно только ожидающее или одобренное бронирование");
 
-        if (input.StartTime >= input.EndTime)
-            throw new GraphQLException("Дата начала должна быть раньше даты окончания");
-
-        if (string.IsNullOrWhiteSpace(input.Reason))
-            throw new GraphQLException("Причина бронирования не может быть пустой");
-
-        if (input.Equipment is null || input.Equipment.Count == 0)
-            throw new GraphQLException("Не выбрано оборудование для бронирования");
+        ValidateBookingInput(input);
 
         var warnings = new Dictionary<string, object>();
         if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
@@ -236,6 +225,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         booking.EndTime = input.EndTime;
         booking.Comment = input.Comment;
         booking.AdminComment = null;
+        booking.Revision++;
         booking.Status = BookingStatus.Pending;
         booking.WarningsJson = SerializeWarnings(warnings);
 
@@ -413,7 +403,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return bookings;
     }
 
-    public async Task<Booking> ApproveBookingAsync(int bookingId, string? adminComment = null)
+    public async Task<Booking> ApproveBookingAsync(int bookingId, int expectedRevision, int actorUserId, string? adminComment = null)
     {
         await using var transaction = await db.Database.BeginTransactionAsync();
         await AcquireAdvisoryLockAsync(2, bookingId);
@@ -421,11 +411,15 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
+        await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
+        EnsureRevision(booking, expectedRevision);
+
         if (booking.Status != BookingStatus.Pending)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Approved;
+        booking.Revision++;
         if (!string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
@@ -437,7 +431,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return updatedBooking;
     }
 
-    public async Task<Booking> CompleteBookingAsync(int bookingId)
+    public async Task<Booking> CompleteBookingAsync(int bookingId, int expectedRevision, int actorUserId)
     {
         await using var transaction = await db.Database.BeginTransactionAsync();
         await AcquireAdvisoryLockAsync(2, bookingId);
@@ -445,11 +439,15 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
+        await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
+        EnsureRevision(booking, expectedRevision);
+
         if (booking.Status != BookingStatus.Approved)
             throw new GraphQLException("Завершить можно только одобренное бронирование");
 
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Completed;
+        booking.Revision++;
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
@@ -458,7 +456,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return updatedBooking;
     }
 
-    public async Task<Booking> CancelBookingAsync(int bookingId, int userId, bool isAdmin, string? adminComment = null)
+    public async Task<Booking> CancelBookingAsync(int bookingId, int userId, bool isAdmin, int expectedRevision, string? adminComment = null)
     {
         await using var transaction = await db.Database.BeginTransactionAsync();
         await AcquireAdvisoryLockAsync(2, bookingId);
@@ -468,6 +466,8 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             .FirstOrDefaultAsync(b => b.Id == bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
+        await RequireDecisionActorAsync(userId, requireAdmin: isAdmin);
+        EnsureRevision(booking, expectedRevision);
         var isOwner = booking.UserId == userId;
 
         if (!isAdmin && !isOwner)
@@ -486,6 +486,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Cancelled;
+        booking.Revision++;
 
         if (isAdmin && !string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
@@ -628,6 +629,31 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     private static string SerializeWarnings(Dictionary<string, object> warnings)
     {
         return JsonSerializer.Serialize(warnings);
+    }
+
+    private static void ValidateBookingInput(CreateBookingInput input)
+    {
+        if (input.StartTime >= input.EndTime)
+            throw new GraphQLException("Дата начала должна быть раньше даты окончания");
+        if (string.IsNullOrWhiteSpace(input.Reason))
+            throw new GraphQLException("Причина бронирования не может быть пустой");
+        if (input.Equipment is null || input.Equipment.Count == 0)
+            throw new GraphQLException("Не выбрано оборудование для бронирования");
+    }
+
+    private async Task RequireDecisionActorAsync(int userId, bool requireAdmin)
+    {
+        var actor = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.Id == userId);
+        if (actor is null || actor.Banned || (requireAdmin && actor.Role != UserRole.Admin))
+            throw new GraphQLException("У вас нет прав для этого действия");
+    }
+
+    private static void EnsureRevision(Booking booking, int expectedRevision)
+    {
+        if (expectedRevision < 1 || booking.Revision != expectedRevision)
+            throw new GraphQLException(ErrorBuilder.New()
+                .SetMessage("Бронирование изменилось. Обновите страницу и проверьте актуальные условия перед решением.")
+                .SetCode("BOOKING_CHANGED").Build());
     }
 
     private static bool HasEquipmentAccess(UserRole role, EqAccess access)

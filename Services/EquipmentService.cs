@@ -282,9 +282,6 @@ public class EquipmentService(AppDbContext db)
             .Where(i => i.EqModelId == eqModelId)
             .ToListAsync();
 
-        if (items.Count == 0)
-            throw new GraphQLException($"Нет экземпляров для модели {eqModelId}");
-
         return items;
     }
 

@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.Models;
 using GUtv_backend_dotnet.Services;
@@ -141,6 +142,101 @@ public class TelegramNotificationTests
         Assert.Contains("<s>Ожидает</s> → <b>Одобрено</b>", sent.Text);
         Assert.Contains("Approved &lt;carefully&gt; &amp; checked", sent.Text);
         Assert.DoesNotContain("Ваша заявка создана", sent.Text);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LargeAdminNotificationKeepsDecisionButtonsAndValidBoundedHtml(bool isUpdated)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await PrepareLargeBookingAsync(fixture);
+
+        if (isUpdated) await fixture.Notifications.NotifyAdminsBookingUpdated(booking);
+        else await fixture.Notifications.NotifyAdminsNewBooking(booking);
+
+        Assert.Equal(2, fixture.Handler.Requests.Count);
+        foreach (var sent in fixture.Handler.Requests)
+        {
+            var plainText = AssertBoundedHtml(sent);
+            Assert.Contains("Бронирование #1", plainText);
+            Assert.Contains("Owner <&>", plainText);
+            Assert.Contains("Reason <&>", plainText);
+            Assert.Contains("Comment <&>", plainText);
+            Assert.Contains("Warning <&>", plainText);
+            Assert.Contains("Camera <&>", plainText);
+            Assert.Contains("… и ещё 140 экземпляров.", plainText);
+            Assert.Contains("Статус: Ожидает", plainText);
+            Assert.Contains(isUpdated ? "Заявка изменена" : "Новая заявка", plainText);
+            var callbacks = sent.Payload.GetProperty("reply_markup").GetProperty("inline_keyboard")[0];
+            Assert.StartsWith("booking:approve:1", callbacks[0].GetProperty("callback_data").GetString());
+            Assert.StartsWith("booking:reject:1", callbacks[1].GetProperty("callback_data").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task LargeStatusNotificationKeepsTransitionCommentAndValidBoundedHtml()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await PrepareLargeBookingAsync(fixture);
+        booking.Status = BookingStatus.Approved;
+        booking.AdminComment = "Admin comment <&> " + string.Concat(Enumerable.Repeat("😀<&>", 3000));
+        await fixture.Db.SaveChangesAsync();
+
+        await fixture.Notifications.NotifyUserBookingStatusChanged(booking, BookingStatus.Pending);
+
+        var sent = Assert.Single(fixture.Handler.Requests);
+        var plainText = AssertBoundedHtml(sent);
+        Assert.Equal(OwnerChat, sent.ChatId);
+        Assert.Contains("<s>Ожидает</s> → <b>Одобрено</b>", sent.Text);
+        Assert.Contains("Reason <&>", plainText);
+        Assert.Contains("Admin comment <&>", plainText);
+        Assert.Contains("Camera <&>", plainText);
+        Assert.Contains("… и ещё 140 экземпляров.", plainText);
+    }
+
+    private static string AssertBoundedHtml(SentRequest sent)
+    {
+        Assert.True(sent.Succeeded);
+        Assert.Equal("Html", sent.Payload.GetProperty("parse_mode").GetString());
+        Assert.InRange(sent.Text.Length, 1, 4096);
+        AssertValidUtf16(sent.Text);
+        // Parsing also rejects a cut entity, unmatched formatting tag, or unescaped user markup.
+        var document = XDocument.Parse("<message>" + sent.Text + "</message>");
+        var plainText = document.Root!.Value;
+        AssertValidUtf16(plainText);
+        Assert.All(document.Root.Descendants(), node => Assert.Contains(node.Name.LocalName, new[] { "b", "s" }));
+        return plainText;
+    }
+
+    private static async Task<Booking> PrepareLargeBookingAsync(Fixture fixture)
+    {
+        var booking = await fixture.Db.Bookings.SingleAsync();
+        var longUnicode = string.Concat(Enumerable.Repeat("😀<&>", 3000));
+        booking.Reason = "Reason <&> " + longUnicode;
+        booking.Comment = "Comment <&> " + longUnicode;
+        var longEquipmentField = string.Concat(Enumerable.Repeat("😀<&>", 100));
+        booking.WarningsJson = JsonSerializer.Serialize(Enumerable.Range(1, 20)
+            .ToDictionary(index => "warning" + index, index => "Warning <&> " + longEquipmentField));
+        var owner = await fixture.Db.Users.SingleAsync(user => user.Id == 1);
+        owner.Name = "Owner <&> " + longUnicode;
+        owner.TelegramUsername = "owner" + longUnicode;
+        var model = await fixture.Db.EqModels.SingleAsync();
+        model.Name = "Camera <&> " + longEquipmentField;
+        var originalItem = await fixture.Db.EqItems.SingleAsync();
+        originalItem.InventoryNumber = "CAM-1<&>" + longEquipmentField;
+        for (var id = 2; id <= 150; id++)
+            fixture.Db.BookingItems.Add(new BookingItem
+            {
+                BookingId = booking.Id,
+                EqItem = new EqItem
+                {
+                    Id = id, EqModelId = model.Id, InventoryNumber = "CAM-" + id + longEquipmentField
+                },
+                StartDate = booking.StartTime, EndDate = booking.EndTime
+            });
+        await fixture.Db.SaveChangesAsync();
+        return booking;
     }
 
     [Theory]

@@ -45,6 +45,7 @@ public class BookingMutations
     [Authorize(Roles = ["Admin"])]
     public async Task<Booking> ApproveBooking(
         int bookingId,
+        int expectedRevision,
         string? adminComment,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
@@ -54,12 +55,15 @@ public class BookingMutations
         var admin = await GetCurrentUserAsync(httpContextAccessor, equipmentService, userService);
         return await bookingService.ApproveBookingAsync(
             bookingId,
+            expectedRevision,
+            admin.Id,
             BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     [Authorize(Roles = ["Admin"])]
     public async Task<Booking> RejectBooking(
         int bookingId,
+        int expectedRevision,
         string? adminComment,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
@@ -71,16 +75,24 @@ public class BookingMutations
             bookingId,
             admin.Id,
             true,
+            expectedRevision,
             BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
     [Authorize(Roles = ["Admin"])]
-    public Task<Booking> CompleteBooking(int id, BookingService bookingService) =>
-        bookingService.CompleteBookingAsync(id);
+    public Task<Booking> CompleteBooking(
+        int id,
+        int expectedRevision,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        BookingService bookingService) =>
+        bookingService.CompleteBookingAsync(id, expectedRevision,
+            equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User));
 
     [Authorize]
     public async Task<Booking> CancelBooking(
         int id,
+        int expectedRevision,
         string? adminComment,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
@@ -99,6 +111,7 @@ public class BookingMutations
             id,
             userId,
             isAdmin,
+            expectedRevision,
             isAdmin && admin is not null
                 ? BookingAdminCommentFormatter.Format(admin, adminComment)
                 : adminComment);
@@ -108,6 +121,7 @@ public class BookingMutations
         string botToken,
         long chatId,
         int bookingId,
+        int expectedRevision,
         string? adminComment,
         BotSecurityService botSecurityService,
         UserService userService,
@@ -118,11 +132,13 @@ public class BookingMutations
         var admin = await userService.GetByTelegramChatIdAsync(chatId)
             ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
 
-        if (admin.Role != UserRole.Admin)
+        if (admin.Banned || admin.Role != UserRole.Admin)
             throw new GraphQLException("У вас нет прав для этого действия");
 
         return await bookingService.ApproveBookingAsync(
             bookingId,
+            expectedRevision,
+            admin.Id,
             BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
@@ -130,6 +146,7 @@ public class BookingMutations
         string botToken,
         long chatId,
         int bookingId,
+        int expectedRevision,
         string? adminComment,
         BotSecurityService botSecurityService,
         UserService userService,
@@ -140,13 +157,14 @@ public class BookingMutations
         var admin = await userService.GetByTelegramChatIdAsync(chatId)
             ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
 
-        if (admin.Role != UserRole.Admin)
+        if (admin.Banned || admin.Role != UserRole.Admin)
             throw new GraphQLException("У вас нет прав для этого действия");
 
         return await bookingService.CancelBookingAsync(
             bookingId,
             admin.Id,
             true,
+            expectedRevision,
             BookingAdminCommentFormatter.Format(admin, adminComment));
     }
 
