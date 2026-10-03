@@ -9,7 +9,7 @@ namespace GUtv_backend_dotnet.Services;
 
 public class AuthService(IConfiguration config)
 {
-    public string GenerateAccessToken(User user)
+    public string GenerateAccessToken(User user, Guid sessionId)
     {
         var key = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(config["Jwt:Key"]!));
@@ -18,6 +18,7 @@ public class AuthService(IConfiguration config)
         {
             new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new Claim("sid", sessionId.ToString()),
             new Claim(JwtRegisteredClaimNames.UniqueName, user.Login),
             new Claim(ClaimTypes.Name, user.Name),
             new Claim(ClaimTypes.Role, user.Role.ToString())

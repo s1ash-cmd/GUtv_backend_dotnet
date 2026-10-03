@@ -11,6 +11,15 @@ namespace GUtv_backend_dotnet.GraphQL.Queries;
 [ExtendObjectType(typeof(Query))]
 public class UserQueries
 {
+    [Authorize]
+    public Task<List<UserSessionPayload>> GetMySessions(IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService, UserSessionService sessionService)
+    {
+        var principal = httpContextAccessor.HttpContext?.User;
+        var userId = equipmentService.GetRequiredUserId(principal);
+        return sessionService.GetActiveAsync(userId, UserSessionService.GetRequiredSessionId(principal));
+    }
+
     [Authorize(Roles = ["Admin"])]
     [UseProjection]
     [UseFiltering]

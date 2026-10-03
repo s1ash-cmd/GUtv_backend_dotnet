@@ -11,7 +11,8 @@ public class UserMutation
     public async Task<AuthPayload> Register(
         RegisterInput input,
         UserService userService,
-        AuthService authService)
+        UserSessionService sessionService,
+        IHttpContextAccessor httpContextAccessor)
     {
         var role = UserRole.User;
 
@@ -22,18 +23,15 @@ public class UserMutation
             role,
             joinYear: null);
 
-        var accessToken = authService.GenerateAccessToken(user);
-        var refreshToken = authService.GenerateRefreshToken();
-
-        await userService.SaveRefreshTokenAsync(user.Id, refreshToken);
-
-        return new AuthPayload(user, accessToken, refreshToken);
+        var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
+        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
     }
 
     public async Task<AuthPayload> Login(
         LoginInput input,
         UserService userService,
-        AuthService authService)
+        UserSessionService sessionService,
+        IHttpContextAccessor httpContextAccessor)
     {
         var user = await userService.GetByLoginAsync(input.Login);
 
@@ -43,23 +41,41 @@ public class UserMutation
         if (user.Banned)
             throw new GraphQLException("Пользователь заблокирован");
 
-        user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
-
-        var accessToken = authService.GenerateAccessToken(user);
-        var refreshToken = authService.GenerateRefreshToken();
-
-        await userService.SaveRefreshTokenAsync(user.Id, refreshToken);
-
-        return new AuthPayload(user, accessToken, refreshToken);
+        var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
+        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
     }
 
     public async Task<AuthPayload> RefreshToken(
         string refreshToken,
-        UserService userService,
-        AuthService authService)
+        UserSessionService sessionService)
     {
-        var session = await userService.RotateRefreshTokenAsync(refreshToken, authService);
+        var session = await sessionService.RotateAsync(refreshToken);
         return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
+    }
+
+    [Authorize]
+    public Task<bool> Logout(IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService, UserSessionService sessionService)
+    {
+        var principal = httpContextAccessor.HttpContext?.User;
+        var userId = equipmentService.GetRequiredUserId(principal);
+        return sessionService.RevokeAsync(userId, UserSessionService.GetRequiredSessionId(principal));
+    }
+
+    [Authorize]
+    public Task<bool> RevokeMySession(Guid sessionId, IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService, UserSessionService sessionService)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return sessionService.RevokeAsync(userId, sessionId);
+    }
+
+    [Authorize]
+    public Task<bool> LogoutAll(IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService, UserSessionService sessionService)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return sessionService.RevokeAllAsync(userId);
     }
 
     [Authorize(Roles = ["Admin"])]

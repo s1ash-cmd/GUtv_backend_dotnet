@@ -79,6 +79,20 @@ public class MigrationTests
         Assert.False(db.Database.HasPendingModelChanges());
     }
 
+    [Fact]
+    public void SessionMigrationRemovesPlaintextTokensAndCreatesIndexedSessionStorage()
+    {
+        using var db = CreateContext();
+        var migration = Assert.Single(db.Database.GetMigrations(), name => name.EndsWith("_AddUserSessions"));
+        var sql = db.GetService<IMigrator>().GenerateScript("20261003172311_AddBookingRevision", migration);
+        Assert.Contains("CREATE TABLE \"UserSessions\"", sql);
+        Assert.Contains("CREATE UNIQUE INDEX \"IX_UserSessions_RefreshTokenHash\"", sql);
+        Assert.Contains("DROP COLUMN \"RefreshToken\"", sql);
+        Assert.Contains("DROP COLUMN \"RefreshTokenExpiryTime\"", sql);
+        Assert.DoesNotContain("DROP TABLE \"Users\"", sql);
+        Assert.False(db.Database.HasPendingModelChanges());
+    }
+
     private static AppDbContext CreateContext() => new(
         new DbContextOptionsBuilder<AppDbContext>()
             // Generating SQL and enumerating migration metadata never opens a connection.

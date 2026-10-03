@@ -6,6 +6,7 @@ namespace GUtv_backend_dotnet.Data;
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<EqModel> EqModels => Set<EqModel>();
     public DbSet<EqItem> EqItems => Set<EqItem>();
     public DbSet<Booking> Bookings => Set<Booking>();
@@ -19,6 +20,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<UserSession>().HasIndex(s => s.RefreshTokenHash).IsUnique();
+        modelBuilder.Entity<UserSession>().Property(s => s.RefreshTokenHash).HasMaxLength(64);
+        modelBuilder.Entity<UserSession>().Property(s => s.UserAgent).HasMaxLength(500);
+        modelBuilder.Entity<UserSession>().HasIndex(s => new { s.UserId, s.RevokedAt, s.ExpiresAt });
+        modelBuilder.Entity<UserSession>().HasOne(s => s.User).WithMany()
+            .HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Booking>().Property(b => b.Revision).HasDefaultValue(1).IsConcurrencyToken();
 

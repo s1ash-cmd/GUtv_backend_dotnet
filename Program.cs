@@ -1,4 +1,4 @@
-﻿using System.Security.Claims;
+using System.Security.Claims;
 using System.Text;
 using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.GraphQL.Mutations;
@@ -63,6 +63,7 @@ builder.Services.AddCors(options =>
 
 builder.Services.AddScoped<UserService>();
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<UserSessionService>();
 builder.Services.AddScoped<EquipmentService>();
 builder.Services.AddScoped<BookingService>();
 builder.Services.AddScoped<CartService>();
@@ -108,36 +109,7 @@ var app = builder.Build();
 
 app.UseCors("ConfiguredOrigins");
 app.UseAuthentication();
-app.Use(async (context, next) =>
-{
-    if (context.User.Identity?.IsAuthenticated == true)
-    {
-        var userIdValue = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (!int.TryParse(userIdValue, out var userId))
-        {
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            return;
-        }
-
-        var db = context.RequestServices.GetRequiredService<AppDbContext>();
-        var currentUser = await db.Users
-            .AsNoTracking()
-            .Where(user => user.Id == userId)
-            .Select(user => new { user.Banned, user.Role })
-            .SingleOrDefaultAsync(context.RequestAborted);
-
-        if (currentUser is null || currentUser.Banned)
-        {
-            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            return;
-        }
-
-        // Authorize against current permissions, even while an older JWT is still valid.
-        CurrentUserClaims.SetRole(context.User, currentUser.Role);
-    }
-
-    await next();
-});
+app.UseMiddleware<SessionAuthenticationMiddleware>();
 app.UseAuthorization();
 
 app.MapGraphQL();

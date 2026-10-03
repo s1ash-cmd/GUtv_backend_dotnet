@@ -21,11 +21,6 @@ public class User
     public UserRole Role { get; set; } = UserRole.User;
     public bool Banned { get; set; }
     public int JoinYear { get; set; }
-    [GraphQLIgnore]
-    public string? RefreshToken { get; set; }
-    [GraphQLIgnore]
-    public DateTime? RefreshTokenExpiryTime { get; set; }
-
     public ICollection<Booking> Bookings { get; set; } = [];
     public Cart? Cart { get; set; }
 }

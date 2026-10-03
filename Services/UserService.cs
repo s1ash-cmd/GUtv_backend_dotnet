@@ -97,59 +97,6 @@ public class UserService
         return BCrypt.Net.BCrypt.Verify(password, passwordHash);
     }
 
-    public async Task SaveRefreshTokenAsync(int userId, string refreshToken)
-    {
-        var user = await _db.Users.FindAsync(userId)
-            ?? throw new GraphQLException("Пользователь не найден");
-
-        user.RefreshToken = refreshToken;
-        user.RefreshTokenExpiryTime = DateTime.UtcNow.AddDays(7);
-        await _db.SaveChangesAsync();
-    }
-
-    public async Task<User?> GetByRefreshTokenAsync(string refreshToken)
-    {
-        return await _db.Users.FirstOrDefaultAsync(u =>
-            u.RefreshToken == refreshToken &&
-            u.RefreshTokenExpiryTime > DateTime.UtcNow);
-    }
-
-    public async Task<RefreshedSession> RotateRefreshTokenAsync(string refreshToken, AuthService authService)
-    {
-        await using var transaction = await _db.Database.BeginTransactionAsync();
-        try
-        {
-            var user = await GetByRefreshTokenAsync(refreshToken)
-                ?? throw new GraphQLException("Недействительный refresh token");
-            if (user.Banned)
-                throw new GraphQLException("Пользователь заблокирован");
-
-            var newRefreshToken = authService.GenerateRefreshToken();
-            var now = DateTime.UtcNow;
-            // Compare-and-swap consumes the old token exactly once, including requests
-            // from clients that cannot coordinate refreshes with browser Web Locks.
-            var updated = await _db.Users
-                .Where(u => u.Id == user.Id && u.RefreshToken == refreshToken &&
-                    u.RefreshTokenExpiryTime > now && !u.Banned)
-                .ExecuteUpdateAsync(setters => setters
-                    .SetProperty(u => u.RefreshToken, newRefreshToken)
-                    .SetProperty(u => u.RefreshTokenExpiryTime, now.AddDays(7)));
-            if (updated != 1)
-                throw new GraphQLException("Недействительный refresh token");
-
-            await _db.Entry(user).ReloadAsync();
-            user = await EnsureRoleUpgradeOnAuthorizationAsync(user);
-            var accessToken = authService.GenerateAccessToken(user);
-            await transaction.CommitAsync();
-            return new RefreshedSession(user, accessToken, newRefreshToken);
-        }
-        catch
-        {
-            _db.ChangeTracker.Clear();
-            throw;
-        }
-    }
-
     public async Task<User?> GetByTelegramChatIdAsync(long chatId)
     {
         return await _db.Users.FirstOrDefaultAsync(u => u.TelegramChatId == chatId);
@@ -180,11 +127,19 @@ public class UserService
 
     public async Task<User> SetBanned(int userId, bool banned)
     {
+        await using var transaction = await _db.Database.BeginTransactionAsync();
         var user = await _db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
         user.Banned = banned;
         await _db.SaveChangesAsync();
+        if (banned)
+        {
+            var now = DateTime.UtcNow;
+            await _db.UserSessions.Where(s => s.UserId == userId && s.RevokedAt == null)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(s => s.RevokedAt, now));
+        }
+        await transaction.CommitAsync();
         return user;
     }
 
@@ -271,5 +226,3 @@ public class UserService
         return Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
     }
 }
-
-public record RefreshedSession(User User, string AccessToken, string RefreshToken);

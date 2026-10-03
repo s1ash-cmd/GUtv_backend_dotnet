@@ -21,7 +21,7 @@ public class CalendarPrivacyTests
         {
             Id = 1, Name = "Участник", Login = "private-login", PasswordHash = "private-hash",
             TelegramChatId = 123456, TelegramUsername = "public-contact",
-            RefreshToken = "private-refresh", Role = UserRole.Admin
+            Role = UserRole.Admin
         };
         var model = new EqModel { Id = 1, Name = "Камера" };
         var item = new EqItem { Id = 1, EqModel = model, InventoryNumber = "0-001-01" };
