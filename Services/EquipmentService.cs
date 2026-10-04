@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GUtv_backend_dotnet.Services;
 
-public class EquipmentService(AppDbContext db)
+public class EquipmentService(AppDbContext db, EquipmentImageStore? images = null)
 {
     public async Task<EqModel> CreateModelAsync(CreateEqModelInput input)
     {
@@ -186,7 +186,11 @@ public class EquipmentService(AppDbContext db)
 
     public async Task<bool> DeleteModelAsync(int id)
     {
-        var model = await db.EqModels.FindAsync(id)
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync() : null;
+        if (db.Database.IsNpgsql())
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT 1 FROM \"EqModels\" WHERE \"Id\" = {id} FOR UPDATE");
+        var model = await db.EqModels.Include(m => m.Photos).FirstOrDefaultAsync(m => m.Id == id)
             ?? throw new GraphQLException($"Модель оборудования с ID {id} не найдена");
 
         var hasBookingHistory = await db.BookingItems
@@ -199,6 +203,8 @@ public class EquipmentService(AppDbContext db)
 
         db.EqModels.Remove(model);
         await db.SaveChangesAsync();
+        if (transaction is not null) await transaction.CommitAsync();
+        foreach (var photo in model.Photos) images?.Delete(photo.Url);
         return true;
     }
 

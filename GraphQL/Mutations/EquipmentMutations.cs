@@ -8,6 +8,16 @@ namespace GUtv_backend_dotnet.GraphQL.Mutations;
 public class EquipmentMutations
 {
     [Authorize(Roles = ["Admin"])]
+    public Task<EqPhoto> UploadEquipmentPhoto(int modelId, string imageBase64,
+        EquipmentPhotoService photos, CancellationToken cancellationToken) =>
+        photos.UploadAsync(modelId, imageBase64, cancellationToken);
+
+    [Authorize(Roles = ["Admin"])]
+    public Task<bool> DeleteEquipmentPhoto(int modelId, int photoId,
+        EquipmentPhotoService photos, CancellationToken cancellationToken) =>
+        photos.DeleteAsync(modelId, photoId, cancellationToken);
+
+    [Authorize(Roles = ["Admin"])]
     public Task<EqModel> CreateEquipmentModel(
         CreateEqModelInput input,
         EquipmentService equipmentService) =>
