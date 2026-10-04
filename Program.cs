@@ -62,6 +62,8 @@ builder.Services.AddCors(options =>
     }));
 
 builder.Services.AddScoped<UserService>();
+builder.Services.AddSingleton<AvatarImageStore>();
+builder.Services.AddScoped<UserAvatarService>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<UserSessionService>();
 builder.Services.AddScoped<EquipmentService>();
@@ -113,6 +115,15 @@ app.UseMiddleware<SessionAuthenticationMiddleware>();
 app.UseAuthorization();
 
 app.MapGraphQL();
+
+app.MapGet("/avatars/{filename}", (string filename, AvatarImageStore images, HttpContext context) =>
+{
+    var path = images.GetPath(filename);
+    if (path is null || !File.Exists(path)) return Results.NotFound();
+    context.Response.Headers.CacheControl = "public,max-age=31536000,immutable";
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    return Results.File(path, "image/webp");
+});
 
 using (var scope = app.Services.CreateScope())
 {

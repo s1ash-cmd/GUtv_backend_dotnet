@@ -21,6 +21,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     {
         base.OnModelCreating(modelBuilder);
 
+        modelBuilder.Entity<User>().Property(u => u.AvatarUrl).HasMaxLength(128);
+
         modelBuilder.Entity<UserSession>().HasIndex(s => s.RefreshTokenHash).IsUnique();
         modelBuilder.Entity<UserSession>().Property(s => s.RefreshTokenHash).HasMaxLength(64);
         modelBuilder.Entity<UserSession>().Property(s => s.UserAgent).HasMaxLength(500);

@@ -31,6 +31,7 @@ public class PostgresSessionTests : IAsyncLifetime
 {
     private string? databaseName;
     private string connectionString = "";
+    private readonly string avatarDirectory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "gutv-session-avatars-" + Guid.NewGuid().ToString("N"));
     private WebApplication? app;
     private HttpClient client = null!;
     private const string Password = "test-password-123";
@@ -73,10 +74,13 @@ public class PostgresSessionTests : IAsyncLifetime
         host.WebHost.UseUrls("http://127.0.0.1:0");
         host.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Jwt:Key"] = Key, ["Jwt:Issuer"] = "session-tests", ["Jwt:Audience"] = "session-tests"
+            ["Jwt:Key"] = Key, ["Jwt:Issuer"] = "session-tests", ["Jwt:Audience"] = "session-tests",
+            ["AvatarStorage:Path"] = avatarDirectory
         });
         host.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
         host.Services.AddScoped<UserService>();
+        host.Services.AddSingleton<AvatarImageStore>();
+        host.Services.AddScoped<UserAvatarService>();
         host.Services.AddScoped<UserSessionService>();
         host.Services.AddScoped<AuthService>();
         host.Services.AddScoped<EquipmentService>();
@@ -125,6 +129,34 @@ public class PostgresSessionTests : IAsyncLifetime
         await AssertRefreshRejectedAsync(desktopNew.RefreshToken);
         await RefreshAsync(mobileNew.RefreshToken);
         await AssertRefreshRejectedAsync("legacy-refresh");
+    }
+
+    [PostgresFact]
+    public async Task HttpAvatarUploadIsOwnedAndConcurrentReplacementsLeaveOnlyTheCurrentFile()
+    {
+        var first = await LoginAsync("first");
+        var second = await LoginAsync("second");
+        using var image = new SixLabors.ImageSharp.Image<SixLabors.ImageSharp.PixelFormats.Rgba32>(80, 60);
+        using var bytes = new MemoryStream();
+        await image.SaveAsync(bytes, new SixLabors.ImageSharp.Formats.Png.PngEncoder());
+        var variables = new { photo = Convert.ToBase64String(bytes.ToArray()) };
+        const string upload = "mutation($photo: String!) { uploadMyAvatar(imageBase64: $photo) { id avatarUrl avatarSeed } }";
+
+        using var anonymous = await SendAsync(upload, variables: variables);
+        using var rejected = JsonDocument.Parse(await anonymous.Content.ReadAsStringAsync());
+        Assert.Equal("AUTH_NOT_AUTHENTICATED", rejected.RootElement.GetProperty("errors")[0].GetProperty("extensions").GetProperty("code").GetString());
+
+        await QueryAsync(upload, first.AccessToken, variables);
+        await Task.WhenAll(QueryAsync(upload, first.AccessToken, variables), QueryAsync(upload, first.AccessToken, variables));
+        var own = (await QueryAsync("{ me { avatarUrl } }", first.AccessToken)).GetProperty("me").GetProperty("avatarUrl").GetString()!;
+        var other = (await QueryAsync("{ me { avatarUrl } }", second.AccessToken)).GetProperty("me").GetProperty("avatarUrl");
+        Assert.Equal(JsonValueKind.Null, other.ValueKind);
+        Assert.Single(Directory.GetFiles(avatarDirectory));
+        Assert.True(File.Exists(System.IO.Path.Combine(avatarDirectory, own["/avatars/".Length..])));
+
+        await QueryAsync("mutation { removeMyAvatar { avatarUrl } }", first.AccessToken);
+        await QueryAsync("mutation { removeMyAvatar { avatarUrl } }", first.AccessToken);
+        Assert.Empty(Directory.GetFiles(avatarDirectory));
     }
 
     [PostgresFact]
@@ -302,6 +334,7 @@ public class PostgresSessionTests : IAsyncLifetime
     {
         client?.Dispose();
         if (app is not null) { await app.StopAsync(); await app.DisposeAsync(); }
+        if (Directory.Exists(avatarDirectory)) Directory.Delete(avatarDirectory, recursive: true);
         if (databaseName is null) return;
         NpgsqlConnection.ClearAllPools();
         var builder = new NpgsqlConnectionStringBuilder(connectionString) { Database = "postgres" };

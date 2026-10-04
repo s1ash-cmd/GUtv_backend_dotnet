@@ -130,6 +130,29 @@ public class UserMutation
     }
 
     [Authorize]
+    public Task<User> UploadMyAvatar(
+        string imageBase64,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserAvatarService avatarService,
+        CancellationToken cancellationToken)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return avatarService.UploadAsync(userId, imageBase64, cancellationToken);
+    }
+
+    [Authorize]
+    public Task<User> RemoveMyAvatar(
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        UserAvatarService avatarService,
+        CancellationToken cancellationToken)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return avatarService.RemoveAsync(userId, cancellationToken);
+    }
+
+    [Authorize]
     public async Task<User> RegenerateMyAvatar(
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,

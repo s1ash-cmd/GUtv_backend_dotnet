@@ -26,6 +26,10 @@ public class BookingQueries
         bookingService.GetBookingsByUserAsync(userId);
 
     [Authorize(Roles = ["Admin"])]
+    public Task<BookingPagePayload> GetBookingsPageByUser(int userId, BookingService bookingService, int page = 1) =>
+        bookingService.GetBookingsPageByUserAsync(userId, page);
+
+    [Authorize(Roles = ["Admin"])]
     public Task<List<Booking>> GetAllBookings(BookingService bookingService) =>
         bookingService.GetAllBookingsAsync();
 

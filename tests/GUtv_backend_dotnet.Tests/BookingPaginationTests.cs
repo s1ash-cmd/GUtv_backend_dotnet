@@ -190,6 +190,11 @@ public class BookingPaginationTests
         var executor = await provider.GetRequiredService<IRequestExecutorResolver>().GetRequestExecutorAsync();
         var all = executor.Schema.QueryType.Fields["allBookingsPage"];
         var mine = executor.Schema.QueryType.Fields["myBookingsPage"];
+        var byUser = executor.Schema.QueryType.Fields["bookingsPageByUser"];
+        Assert.Equal("Int!", FormatType(byUser.Arguments["userId"].Type));
+        Assert.Equal("1", byUser.Arguments["page"].DefaultValue!.ToString());
+        var byUserAuth = Assert.Single(byUser.Directives, d => d.Type.Name == "authorize").AsValue<AuthorizeDirective>();
+        Assert.Equal(new[] { "Admin" }, byUserAuth.Roles);
 
         foreach (var field in new[] { all, mine })
         {
