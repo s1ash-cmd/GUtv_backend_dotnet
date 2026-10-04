@@ -303,15 +303,9 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
         if (!modelExists)
             throw new GraphQLException($"Модель оборудования с ID {eqModelId} не найдена");
 
-        return await db.EqItems
+        return await EquipmentAvailability.ForModel(db.EqItems, eqModelId, start, end)
             .AsNoTracking()
             .Include(i => i.EqModel)
-            .Where(i => i.EqModelId == eqModelId)
-            .Where(i => i.Operable)
-            .Where(i => !i.BookingItems.Any(bi =>
-                (bi.Booking.Status == BookingStatus.Pending ||
-                 bi.Booking.Status == BookingStatus.Approved) &&
-                start < bi.EndDate && end > bi.StartDate))
             .ToListAsync();
     }
 

@@ -40,9 +40,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         ValidateBookingInput(input);
 
-        var warnings = new Dictionary<string, object>();
-        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
-            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
+        var allocation = await AllocateEquipmentAsync(input, user);
 
         var booking = new Booking
         {
@@ -53,59 +51,9 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             EndTime = input.EndTime,
             Status = BookingStatus.Pending,
             Comment = input.Comment,
-            WarningsJson = SerializeWarnings(warnings)
+            BookingItems = allocation.Items,
+            WarningsJson = SerializeWarnings(allocation.Warnings)
         };
-
-        var bookingItems = new List<BookingItem>();
-        foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
-        {
-            var eqModel = await db.EqModels
-                .FirstOrDefaultAsync(m => m.Name == requestedItem.ModelName);
-
-            if (eqModel == null)
-                throw new GraphQLException($"Модель оборудования {requestedItem.ModelName} не найдена");
-
-            await AcquireAdvisoryLockAsync(1, eqModel.Id);
-
-            var hasEquipmentAccess = HasEquipmentAccess(user.Role, eqModel.Access);
-            if (!hasEquipmentAccess && eqModel.Access == EqAccess.Ronin)
-            {
-                throw new GraphQLException(
-                    $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin");
-            }
-
-            if (!hasEquipmentAccess && eqModel.Access == EqAccess.Osnova)
-                warnings[$"missingOsnovaAccess_{eqModel.Id}"] =
-                    $"Для оборудования {requestedItem.ModelName} требуется доступ «Основа»";
-
-            var availableItems = await GetAvailableItemsAsync(
-                eqModel.Id,
-                input.StartTime,
-                input.EndTime,
-                requestedItem.Quantity);
-
-            if (availableItems.Count < requestedItem.Quantity)
-            {
-                var conflicts = await GetBookingConflictsAsync(eqModel.Id, input.StartTime, input.EndTime);
-                throw new GraphQLException(
-                    FormatConflictMessage(
-                        requestedItem.ModelName,
-                        availableItems.Count,
-                        requestedItem.Quantity,
-                        conflicts));
-            }
-
-            bookingItems.AddRange(availableItems.Select(eqItem => new BookingItem
-            {
-                EqItemId = eqItem.Id,
-                StartDate = input.StartTime,
-                EndDate = input.EndTime,
-                IsReturned = false
-            }));
-        }
-
-        booking.BookingItems = bookingItems;
-        booking.WarningsJson = SerializeWarnings(warnings);
 
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
@@ -162,64 +110,10 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
         ValidateBookingInput(input);
 
-        var warnings = new Dictionary<string, object>();
-        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
-            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
-
-        var replacementItems = new List<BookingItem>();
-        foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
-        {
-            var eqModel = await db.EqModels
-                .FirstOrDefaultAsync(m => m.Name == requestedItem.ModelName)
-                ?? throw new GraphQLException($"Модель оборудования {requestedItem.ModelName} не найдена");
-
-            await AcquireAdvisoryLockAsync(1, eqModel.Id);
-
-            var ownerHasEquipmentAccess = HasEquipmentAccess(bookingUser.Role, eqModel.Access);
-            if (!isAdmin && !ownerHasEquipmentAccess && eqModel.Access == EqAccess.Ronin)
-            {
-                throw new GraphQLException(
-                    $"У вас нет доступа к оборудованию {requestedItem.ModelName}. Требуется разрешение на Ronin");
-            }
-
-            if (!ownerHasEquipmentAccess && eqModel.Access == EqAccess.Osnova)
-                warnings[$"missingOsnovaAccess_{eqModel.Id}"] =
-                    $"Для оборудования {requestedItem.ModelName} требуется доступ «Основа»";
-
-            var availableItems = await GetAvailableItemsAsync(
-                eqModel.Id,
-                input.StartTime,
-                input.EndTime,
-                requestedItem.Quantity,
-                bookingId);
-
-            if (availableItems.Count < requestedItem.Quantity)
-            {
-                var conflicts = await GetBookingConflictsAsync(
-                    eqModel.Id,
-                    input.StartTime,
-                    input.EndTime,
-                    bookingId);
-                throw new GraphQLException(
-                    FormatConflictMessage(
-                        requestedItem.ModelName,
-                        availableItems.Count,
-                        requestedItem.Quantity,
-                        conflicts));
-            }
-
-            replacementItems.AddRange(availableItems.Select(eqItem => new BookingItem
-            {
-                BookingId = booking.Id,
-                EqItemId = eqItem.Id,
-                StartDate = input.StartTime,
-                EndDate = input.EndTime,
-                IsReturned = false
-            }));
-        }
+        var allocation = await AllocateEquipmentAsync(input, bookingUser, isAdmin, bookingId);
 
         db.BookingItems.RemoveRange(booking.BookingItems);
-        booking.BookingItems = replacementItems;
+        booking.BookingItems = allocation.Items;
         booking.Reason = input.Reason.Trim();
         booking.StartTime = input.StartTime;
         booking.EndTime = input.EndTime;
@@ -227,7 +121,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         booking.AdminComment = null;
         booking.Revision++;
         booking.Status = BookingStatus.Pending;
-        booking.WarningsJson = SerializeWarnings(warnings);
+        booking.WarningsJson = SerializeWarnings(allocation.Warnings);
 
         await db.SaveChangesAsync();
         return await GetBookingEntityByIdAsync(booking.Id);
@@ -504,28 +398,62 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return string.IsNullOrWhiteSpace(booking.WarningsJson) ? "{}" : booking.WarningsJson;
     }
 
-    private async Task<List<EqItem>> GetAvailableItemsAsync(
-        int eqModelId,
-        DateTime start,
-        DateTime end,
-        int requiredCount,
+    // Creation and editing share access checks, warnings and allocation. During editing,
+    // the current booking is excluded from conflicts and administrators can grant Ronin equipment.
+    private async Task<EquipmentAllocation> AllocateEquipmentAsync(
+        CreateBookingInput input,
+        User owner,
+        bool isAdmin = false,
         int? excludedBookingId = null)
     {
-        var items = await db.EqItems
-            .Include(i => i.EqModel)
-            .Where(i => i.EqModelId == eqModelId)
-            .Where(i => i.Operable)
-            .Where(i => !i.BookingItems.Any(bi =>
-                (!excludedBookingId.HasValue || bi.BookingId != excludedBookingId.Value) &&
-                (bi.Booking.Status == BookingStatus.Pending ||
-                 bi.Booking.Status == BookingStatus.Approved) &&
-                start < bi.EndDate && end > bi.StartDate))
-            .OrderBy(i => i.InventoryNumber)
-            .Take(requiredCount + 1)
-            .ToListAsync();
+        var warnings = new Dictionary<string, object>();
+        if ((input.StartTime - DateTime.UtcNow).TotalDays < 3)
+            warnings["invalidDate"] = "Бронирование создается меньше чем за 3 дня";
 
-        return items.Take(requiredCount).ToList();
+        var items = new List<BookingItem>();
+        foreach (var requestedItem in NormalizeRequestedEquipment(input.Equipment))
+        {
+            await AcquireAdvisoryLockAsync(1, requestedItem.EqModelId);
+            var model = await db.EqModels.FindAsync(requestedItem.EqModelId)
+                ?? throw new GraphQLException($"Модель оборудования с ID {requestedItem.EqModelId} не найдена");
+
+            var hasAccess = HasEquipmentAccess(owner.Role, model.Access);
+            if (!isAdmin && !hasAccess && model.Access == EqAccess.Ronin)
+                throw new GraphQLException(
+                    $"У вас нет доступа к оборудованию {model.Name}. Требуется разрешение на Ronin");
+            if (!hasAccess && model.Access == EqAccess.Osnova)
+                warnings[$"missingOsnovaAccess_{model.Id}"] =
+                    $"Для оборудования {model.Name} требуется доступ «Основа»";
+
+            var available = await EquipmentAvailability.ForModel(
+                    db.EqItems, model.Id, input.StartTime, input.EndTime, excludedBookingId)
+                .OrderBy(item => item.InventoryNumber)
+                .ThenBy(item => item.Id)
+                .Take(requestedItem.Quantity)
+                .ToListAsync();
+
+            if (available.Count < requestedItem.Quantity)
+            {
+                var conflicts = await GetBookingConflictsAsync(
+                    model.Id, input.StartTime, input.EndTime, excludedBookingId);
+                throw new GraphQLException(FormatConflictMessage(
+                    model.Name, available.Count, requestedItem.Quantity, conflicts));
+            }
+
+            items.AddRange(available.Select(item => new BookingItem
+            {
+                BookingId = excludedBookingId ?? 0,
+                EqItemId = item.Id,
+                StartDate = input.StartTime,
+                EndDate = input.EndTime,
+                IsReturned = false
+            }));
+        }
+
+        return new EquipmentAllocation(items, warnings);
     }
+
+    private sealed record EquipmentAllocation(List<BookingItem> Items, Dictionary<string, object> Warnings);
 
     private async Task<List<BookingItem>> GetBookingConflictsAsync(
         int eqModelId,
@@ -672,20 +600,28 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     {
         foreach (var item in equipment)
         {
-            if (string.IsNullOrWhiteSpace(item.ModelName))
-                throw new GraphQLException("Название модели оборудования не может быть пустым");
+            if (item.EqModelId <= 0)
+                throw new GraphQLException("ID модели оборудования должен быть больше 0");
 
             if (item.Quantity <= 0)
-                throw new GraphQLException($"Количество для модели {item.ModelName} должно быть больше 0");
+                throw new GraphQLException($"Количество для модели с ID {item.EqModelId} должно быть больше 0");
         }
 
         return equipment
-            .GroupBy(item => item.ModelName.Trim(), StringComparer.OrdinalIgnoreCase)
-            .OrderBy(group => group.Key, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(item => item.EqModelId)
+            .OrderBy(group => group.Key)
             .Select(group => new CreateBookingEquipmentInput(
                 group.Key,
-                group.Sum(item => item.Quantity)))
+                SumQuantity(group)))
             .ToList();
+
+        static int SumQuantity(IGrouping<int, CreateBookingEquipmentInput> group)
+        {
+            var quantity = group.Sum(item => (long)item.Quantity);
+            if (quantity > int.MaxValue)
+                throw new GraphQLException($"Слишком большое количество для модели с ID {group.Key}");
+            return (int)quantity;
+        }
     }
 
     private async Task AcquireAdvisoryLockAsync(int lockGroup, int entityId)
@@ -704,6 +640,6 @@ public record CreateBookingInput(
 );
 
 public record CreateBookingEquipmentInput(
-    string ModelName,
+    int EqModelId,
     int Quantity
 );

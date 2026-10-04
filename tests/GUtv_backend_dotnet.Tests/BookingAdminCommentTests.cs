@@ -236,7 +236,7 @@ public class BookingAdminCommentTests
         var service = scope.ServiceProvider.GetRequiredService<BookingService>();
         var error = await Assert.ThrowsAsync<HotChocolate.GraphQLException>(() => service.CreateBookingAsync(
             new CreateBookingInput("  ", DateTime.UtcNow.AddDays(10), DateTime.UtcNow.AddDays(11), null,
-                [new CreateBookingEquipmentInput("Camera", 1)]), 1));
+                [new CreateBookingEquipmentInput(1, 1)]), 1));
         Assert.Contains("Причина", error.Message);
         Assert.Equal(1, await scope.ServiceProvider.GetRequiredService<AppDbContext>().Bookings.CountAsync());
     }
@@ -319,6 +319,18 @@ public class BookingAdminCommentTests
     }
 
     [Fact]
+    public async Task GraphqlBookingEquipmentUsesRequiredModelIds()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var executor = await fixture.Provider.GetRequiredService<IRequestExecutorResolver>().GetRequestExecutorAsync();
+        var input = executor.Schema.GetType<InputObjectType>("CreateBookingEquipmentInput");
+        Assert.IsType<NonNullType>(input.Fields["eqModelId"].Type);
+        Assert.IsType<IntType>(input.Fields["eqModelId"].Type.NamedType());
+        Assert.Null(input.Fields["eqModelId"].DefaultValue);
+        Assert.DoesNotContain(input.Fields, field => field.Name == "modelName");
+    }
+
+    [Fact]
     public async Task GraphqlDecisionsRequireAnExplicitRevision()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -376,7 +388,7 @@ public class BookingAdminCommentTests
         using var scope = fixture.Provider.CreateScope();
         await scope.ServiceProvider.GetRequiredService<BookingService>().UpdateBookingAsync(1,
             new CreateBookingInput("Changed dates and equipment", DateTime.UtcNow.AddDays(10),
-                DateTime.UtcNow.AddDays(11), null, [new CreateBookingEquipmentInput("Camera", 1)]), 1, false);
+                DateTime.UtcNow.AddDays(11), null, [new CreateBookingEquipmentInput(1, 1)]), 1, false);
     }
 
     [Fact]

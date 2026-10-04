@@ -391,7 +391,7 @@ public class TelegramNotificationTests
         }
         else
         {
-            var input = CreateInput() with { Equipment = [new CreateBookingEquipmentInput("Camera", 2)] };
+            var input = CreateInput() with { Equipment = [new CreateBookingEquipmentInput(1, 2)] };
             await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.CreateBookingAsync(input, 1));
         }
 
@@ -432,7 +432,7 @@ public class TelegramNotificationTests
 
     private static CreateBookingInput CreateInput(string reason = "Created reason") => new(
         reason, DateTime.UtcNow.AddDays(7), DateTime.UtcNow.AddDays(8), "Owner comment",
-        [new CreateBookingEquipmentInput("Camera", 1)]);
+        [new CreateBookingEquipmentInput(1, 1)]);
 
     private static void AssertValidUtf16(string text)
     {

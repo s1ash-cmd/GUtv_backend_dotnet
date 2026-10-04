@@ -273,7 +273,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.StartTime.Value,
             cart.EndTime.Value,
             cart.Comment,
-            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModel.Name, i.Quantity)).ToList());
+            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity)).ToList());
 
         var booking = await bookingService.CreateBookingInTransactionAsync(input, userId);
         await ClearCartCoreAsync(userId);
@@ -300,7 +300,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.StartTime.Value,
             cart.EndTime.Value,
             cart.Comment,
-            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModel.Name, i.Quantity)).ToList());
+            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity)).ToList());
 
         var booking = await bookingService.UpdateBookingInTransactionAsync(bookingId, input, userId, isAdmin);
         await ClearCartCoreAsync(userId);
