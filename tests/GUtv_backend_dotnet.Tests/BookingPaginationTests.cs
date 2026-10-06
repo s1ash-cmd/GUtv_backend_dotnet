@@ -171,6 +171,41 @@ public class BookingPaginationTests
     }
 
     [Fact]
+    public async Task UnusedEquipmentItemHasEmptyHistory()
+    {
+        await using var fixture = await Fixture.CreateAsync(0);
+        var item = new EqItem
+        {
+            EqModel = new EqModel { Name = "Unused camera" }, InventoryNumber = "0-002-01"
+        };
+        fixture.Db.EqItems.Add(item);
+        await fixture.Db.SaveChangesAsync();
+
+        Assert.Empty(await fixture.Service.GetBookingsByEquipmentItemAsync(item.Id));
+    }
+
+    [Fact]
+    public async Task EquipmentHistoryIncludesCancelledBookingsAndOnlySelectedUnit()
+    {
+        await using var fixture = await Fixture.CreateAsync(3, booking =>
+        {
+            if (booking.Id == 2) booking.Status = BookingStatus.Cancelled;
+        });
+        var otherBooking = await fixture.Db.Bookings.Include(b => b.BookingItems)
+            .SingleAsync(b => b.Id == 3);
+        Assert.Single(otherBooking.BookingItems).EqItem = new EqItem
+        {
+            EqModel = new EqModel { Name = "Other camera" }, InventoryNumber = "0-002-01"
+        };
+        await fixture.Db.SaveChangesAsync();
+
+        var history = await fixture.Service.GetBookingsByEquipmentItemAsync(1);
+
+        Assert.Equal(new[] { 1, 2 }, history.Select(b => b.Id).Order());
+        Assert.Contains(history, b => b.Status == BookingStatus.Cancelled);
+    }
+
+    [Fact]
     public async Task GraphqlSchemaHasFixedPagePayloadDefaultsAndCorrectAuthorization()
     {
         var services = new ServiceCollection();

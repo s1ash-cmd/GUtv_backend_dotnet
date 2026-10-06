@@ -258,9 +258,6 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             .Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItemId))
             .ToListAsync();
 
-        if (bookings.Count == 0)
-            throw new GraphQLException($"Не найдено бронирований для оборудования с ID {eqItemId}");
-
         return bookings;
     }
 

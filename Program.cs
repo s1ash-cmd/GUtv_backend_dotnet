@@ -83,8 +83,11 @@ builder.Services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(botToken
 builder.Services.AddSingleton<TelegramUpdateHandler>();
 builder.Services.AddSingleton<AnnouncementBotHandler>();
 builder.Services.AddScoped<TelegramNotificationService>();
-builder.Services.AddHostedService<TelegramBotService>();
-builder.Services.AddHostedService<AnnouncementDeliveryWorker>();
+if (builder.Configuration.GetValue("BotConfiguration:Enabled", true))
+{
+    builder.Services.AddHostedService<TelegramBotService>();
+    builder.Services.AddHostedService<AnnouncementDeliveryWorker>();
+}
 
 builder.Services
     .AddGraphQLServer()
