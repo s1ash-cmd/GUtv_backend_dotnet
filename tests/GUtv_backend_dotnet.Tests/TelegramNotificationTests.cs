@@ -386,7 +386,7 @@ public class TelegramNotificationTests
         {
             await PrepareCartAsync(fixture, quantity: 2);
             await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.CreateBookingFromCartAsync(1));
-            Assert.Equal(2, (await fixture.Db.CartItems.AsNoTracking().SingleAsync()).Quantity);
+            Assert.Equal(0, (await fixture.Db.CartItems.AsNoTracking().SingleAsync()).Quantity);
             Assert.Equal("Created reason", (await fixture.Db.Carts.AsNoTracking().SingleAsync()).Reason);
         }
         else
@@ -428,11 +428,12 @@ public class TelegramNotificationTests
         var input = CreateInput();
         await fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(input.Reason, input.StartTime, input.EndTime, input.Comment));
         await fixture.Carts.AddCartItemAsync(1, 1, quantity);
+        if (quantity == 1) await fixture.Carts.SetCartItemSelectionAsync(1, 1, [1]);
     }
 
     private static CreateBookingInput CreateInput(string reason = "Created reason") => new(
         reason, DateTime.UtcNow.AddDays(7), DateTime.UtcNow.AddDays(8), "Owner comment",
-        [new CreateBookingEquipmentInput(1, 1)]);
+        [new CreateBookingEquipmentInput(1, 1, [1])]);
 
     private static void AssertValidUtf16(string text)
     {

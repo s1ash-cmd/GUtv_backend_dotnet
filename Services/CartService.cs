@@ -13,8 +13,31 @@ public class CartService(AppDbContext db, BookingService bookingService)
     public Task<Cart> SetCartDetailsAsync(int userId, UpdateCartDetailsInput input) =>
         WithCartLockAsync(userId, () => SetCartDetailsCoreAsync(userId, input));
 
-    public Task<Cart> AddCartItemAsync(int userId, int eqModelId, int quantity) =>
-        WithCartLockAsync(userId, () => AddCartItemCoreAsync(userId, eqModelId, quantity));
+    public Task<Cart> AddCartItemAsync(int userId, int eqModelId, int quantity, int? selectedItemId = null) =>
+        WithCartLockAsync(userId, () => AddCartItemCoreAsync(userId, eqModelId, quantity, selectedItemId));
+
+    public Task<Cart> SetCartItemSelectionAsync(int userId, int eqModelId, int[] selectedItemIds) =>
+        WithCartLockAsync(userId, () => SetCartItemSelectionCoreAsync(userId, eqModelId, selectedItemIds));
+
+    public async Task<List<CartEquipmentOption>> GetEquipmentOptionsAsync(
+        int userId, int eqModelId, DateTime? start, DateTime? end)
+    {
+        if (start.HasValue != end.HasValue || (start.HasValue && start >= end))
+            throw new GraphQLException("Укажите корректный период бронирования");
+
+        var cart = await db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId);
+        // Editing may reuse its own assignments. The edit target is set only after checking access.
+        var excludedBookingId = cart?.EditingBookingId;
+        var options = await db.EqItems.AsNoTracking().Where(item => item.EqModelId == eqModelId)
+            .OrderBy(item => item.InventoryNumber).ThenBy(item => item.Id)
+            .Select(item => new { item.Id, item.InventoryNumber, item.Operable }).ToListAsync();
+        var availableIds = start.HasValue
+            ? await EquipmentAvailability.ForModel(db.EqItems, eqModelId, start.Value, end!.Value, excludedBookingId)
+                .Select(item => item.Id).ToListAsync()
+            : null;
+        return options.Select(item => new CartEquipmentOption(item.Id, item.InventoryNumber, item.Operable,
+            availableIds is null ? null : availableIds.Contains(item.Id))).ToList();
+    }
 
     public Task<Cart> UpdateCartItemQuantityAsync(int userId, int eqModelId, int quantity) =>
         WithCartLockAsync(userId, () => UpdateCartItemQuantityCoreAsync(userId, eqModelId, quantity));
@@ -109,7 +132,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
         return await GetOrCreateCartCoreAsync(userId);
     }
 
-    private async Task<Cart> AddCartItemCoreAsync(int userId, int eqModelId, int quantity)
+    private async Task<Cart> AddCartItemCoreAsync(int userId, int eqModelId, int quantity, int? selectedItemId)
     {
         if (quantity <= 0)
             throw new GraphQLException("Количество должно быть больше 0");
@@ -119,24 +142,61 @@ public class CartService(AppDbContext db, BookingService bookingService)
             ?? throw new GraphQLException("Модель оборудования не найдена");
 
         var item = await db.CartItems.FirstOrDefaultAsync(i => i.CartId == cart.Id && i.EqModelId == eqModelId);
+        var selectedIds = (item?.SelectedItemIds ?? []).Concat(selectedItemId.HasValue ? [selectedItemId.Value] : Array.Empty<int>()).ToArray();
+        await ValidateSelectionAsync(eqModelId, selectedIds.Length, selectedIds);
         if (item == null)
         {
             item = new CartItem
             {
                 CartId = cart.Id,
                 EqModelId = eqModel.Id,
-                Quantity = quantity
+                Quantity = selectedIds.Length,
+                SelectedItemIds = selectedIds
             };
             db.CartItems.Add(item);
         }
         else
         {
-            item.Quantity += quantity;
+            item.Quantity = selectedIds.Length;
+            item.SelectedItemIds = selectedIds;
         }
 
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
         return await GetOrCreateCartCoreAsync(userId);
+    }
+
+    private async Task<Cart> SetCartItemSelectionCoreAsync(int userId, int eqModelId, int[] selectedItemIds)
+    {
+        var cart = await GetCartTrackedAsync(userId);
+        var item = cart.Items.FirstOrDefault(item => item.EqModelId == eqModelId);
+        await ValidateSelectionAsync(eqModelId, selectedItemIds.Length, selectedItemIds);
+        if (item is null)
+        {
+            if (selectedItemIds.Length == 0)
+                throw new GraphQLException("Выберите хотя бы один инвентарный номер");
+            item = new CartItem { CartId = cart.Id, EqModelId = eqModelId };
+            db.CartItems.Add(item);
+        }
+        item.Quantity = selectedItemIds.Length;
+        item.SelectedItemIds = selectedItemIds.ToArray();
+        cart.UpdatedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        return await GetOrCreateCartCoreAsync(userId);
+    }
+
+    private async Task ValidateSelectionAsync(int eqModelId, int quantity, int[] selectedIds)
+    {
+        if (selectedIds.Length > quantity || selectedIds.Any(id => id <= 0) || selectedIds.Distinct().Count() != selectedIds.Length)
+            throw new GraphQLException("Выберите разные инвентарные номера, не больше указанного количества оборудования");
+        if (selectedIds.Length == 0) return;
+        var items = await db.EqItems.AsNoTracking()
+            .Where(item => item.EqModelId == eqModelId && selectedIds.Contains(item.Id)).ToListAsync();
+        if (items.Count != selectedIds.Length)
+            throw new GraphQLException("Выбранный экземпляр не найден или не относится к этой модели");
+        var faulty = items.FirstOrDefault(item => !item.Operable);
+        if (faulty is not null)
+            throw new GraphQLException($"Экземпляр {faulty.InventoryNumber} неисправен");
     }
 
     private async Task<Cart> UpdateCartItemQuantityCoreAsync(int userId, int eqModelId, int quantity)
@@ -148,7 +208,11 @@ public class CartService(AppDbContext db, BookingService bookingService)
         if (quantity <= 0)
             db.CartItems.Remove(item);
         else
-            item.Quantity = quantity;
+        {
+            if (quantity != item.SelectedItemIds.Length)
+                throw new GraphQLException("Количество определяется выбранными инвентарными номерами");
+            item.Quantity = item.SelectedItemIds.Length;
+        }
 
         cart.UpdatedAt = DateTime.UtcNow;
         await db.SaveChangesAsync();
@@ -200,6 +264,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
 
         foreach (var group in booking.BookingItems.GroupBy(item => item.EqItem.EqModelId))
         {
+            var selectedIds = group.Select(item => item.EqItemId).ToArray();
             var cartItem = cart.Items.FirstOrDefault(item => item.EqModelId == group.Key);
             if (cartItem == null)
             {
@@ -207,12 +272,17 @@ public class CartService(AppDbContext db, BookingService bookingService)
                 {
                     CartId = cart.Id,
                     EqModelId = group.Key,
-                    Quantity = group.Count()
+                    Quantity = group.Count(),
+                    SelectedItemIds = selectedIds
                 });
             }
             else
             {
-                cartItem.Quantity += group.Count();
+                var combinedIds = cartItem.SelectedItemIds.Concat(selectedIds).ToArray();
+                if (combinedIds.Distinct().Count() != combinedIds.Length)
+                    throw new GraphQLException("Этот инвентарный номер уже выбран в корзине");
+                cartItem.Quantity = combinedIds.Length;
+                cartItem.SelectedItemIds = combinedIds;
             }
         }
 
@@ -238,7 +308,8 @@ public class CartService(AppDbContext db, BookingService bookingService)
             {
                 CartId = cart.Id,
                 EqModelId = group.Key,
-                Quantity = group.Count()
+                Quantity = group.Count(),
+                SelectedItemIds = group.Select(item => item.EqItemId).ToArray()
             });
         }
 
@@ -273,7 +344,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.StartTime.Value,
             cart.EndTime.Value,
             cart.Comment,
-            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity)).ToList());
+            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity, i.SelectedItemIds)).ToList());
 
         var booking = await bookingService.CreateBookingInTransactionAsync(input, userId);
         await ClearCartCoreAsync(userId);
@@ -300,7 +371,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
             cart.StartTime.Value,
             cart.EndTime.Value,
             cart.Comment,
-            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity)).ToList());
+            cart.Items.Select(i => new CreateBookingEquipmentInput(i.EqModelId, i.Quantity, i.SelectedItemIds)).ToList());
 
         var booking = await bookingService.UpdateBookingInTransactionAsync(bookingId, input, userId, isAdmin);
         await ClearCartCoreAsync(userId);
@@ -360,3 +431,5 @@ public record UpdateCartDetailsInput(
     DateTime? EndTime,
     string? Comment
 );
+
+public record CartEquipmentOption(int Id, string InventoryNumber, bool Operable, bool? Available);

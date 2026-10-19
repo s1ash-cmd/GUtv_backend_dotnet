@@ -9,6 +9,7 @@ using GUtv_backend_dotnet.GraphQL.Queries;
 using GUtv_backend_dotnet.GraphQL.Types;
 using GUtv_backend_dotnet.Models;
 using GUtv_backend_dotnet.Services;
+using GUtv_backend_dotnet.Services.Telegram;
 using HotChocolate;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -23,6 +24,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
+using Telegram.Bot;
 
 namespace GUtv_backend_dotnet.Tests;
 
@@ -294,6 +296,60 @@ public class PostgresSessionTests : IAsyncLifetime
     private static UserSessionService Service(AppDbContext db) => new(db, new UserService(db), new AuthService(
         new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         { ["Jwt:Key"] = Key, ["Jwt:Issuer"] = "session-tests", ["Jwt:Audience"] = "session-tests" }).Build()));
+
+    [PostgresFact]
+    public async Task ConcurrentExplicitInventoryRequestsCannotDoubleBookAndMissingChoiceIsRejected()
+    {
+        int modelId, selectedId, automaticId;
+        await using (var db = new AppDbContext(Options))
+        {
+            var model = new EqModel { Name = "Headphones", EqItems = [
+                new EqItem { InventoryNumber = "HEAD-001" },
+                new EqItem { InventoryNumber = "HEAD-002" }
+            ] };
+            db.EqModels.Add(model);
+            await db.SaveChangesAsync();
+            modelId = model.Id;
+            automaticId = model.EqItems[0].Id;
+            selectedId = model.EqItems[1].Id;
+        }
+        var start = DateTime.UtcNow.AddDays(10);
+        var input = new CreateBookingInput("Inventory concurrency", start, start.AddHours(2), null,
+            [new CreateBookingEquipmentInput(modelId, 1, [selectedId])]);
+
+        async Task<bool> BookAsync()
+        {
+            await using var db = new AppDbContext(Options);
+            var service = BookingServiceFor(db);
+            try { await service.CreateBookingAsync(input, 1); return true; }
+            catch (GraphQLException error)
+            {
+                Assert.Contains(error.Errors, item => item.Message.Contains("HEAD-002") && item.Message.Contains("занят"));
+                return false;
+            }
+        }
+
+        var outcomes = await Task.WhenAll(BookAsync(), BookAsync());
+        Assert.Single(outcomes, success => success);
+        Assert.Single(outcomes, success => !success);
+        await using var verify = new AppDbContext(Options);
+        var assigned = await verify.BookingItems.AsNoTracking().SingleAsync();
+        Assert.Equal(selectedId, assigned.EqItemId);
+        Assert.True(assigned.IsExplicitlySelected);
+        await Assert.ThrowsAsync<GraphQLException>(() => BookingServiceFor(verify).CreateBookingAsync(input with
+        {
+            Equipment = [new CreateBookingEquipmentInput(modelId, 1)]
+        }, 2));
+        var other = await BookingServiceFor(verify).CreateBookingAsync(input with
+        {
+            Equipment = [new CreateBookingEquipmentInput(modelId, 1, [automaticId])]
+        }, 2);
+        Assert.Equal(automaticId, Assert.Single(other.BookingItems).EqItemId);
+
+        static BookingService BookingServiceFor(AppDbContext db) => new(db, new TelegramNotificationService(
+            new TelegramBotClient("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"), db,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<TelegramNotificationService>.Instance));
+    }
 
     private async Task<Tokens> LoginAsync(string login)
     {

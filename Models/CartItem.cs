@@ -8,4 +8,5 @@ public class CartItem
     public int EqModelId { get; set; }
     public EqModel EqModel { get; set; } = null!;
     public int Quantity { get; set; }
+    public int[] SelectedItemIds { get; set; } = [];
 }

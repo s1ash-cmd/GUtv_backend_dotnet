@@ -25,10 +25,23 @@ public class CartMutations
         int quantity,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
+        CartService cartService,
+        int? selectedItemId = null)
+    {
+        var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        return cartService.AddCartItemAsync(userId, eqModelId, quantity, selectedItemId);
+    }
+
+    [Authorize]
+    public Task<Cart> SetCartItemSelection(
+        int eqModelId,
+        int[] selectedItemIds,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
         CartService cartService)
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
-        return cartService.AddCartItemAsync(userId, eqModelId, quantity);
+        return cartService.SetCartItemSelectionAsync(userId, eqModelId, selectedItemIds);
     }
 
     [Authorize]

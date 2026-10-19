@@ -422,28 +422,33 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
                 warnings[$"missingOsnovaAccess_{model.Id}"] =
                     $"Для оборудования {model.Name} требуется доступ «Основа»";
 
-            var available = await EquipmentAvailability.ForModel(
-                    db.EqItems, model.Id, input.StartTime, input.EndTime, excludedBookingId)
-                .OrderBy(item => item.InventoryNumber)
-                .ThenBy(item => item.Id)
-                .Take(requestedItem.Quantity)
+            var selectedIds = requestedItem.SelectedItemIds ?? [];
+            var selected = await db.EqItems.AsNoTracking()
+                .Where(item => item.EqModelId == model.Id && selectedIds.Contains(item.Id))
                 .ToListAsync();
+            if (selected.Count != selectedIds.Count)
+                throw new GraphQLException($"Выбранный экземпляр не найден или не относится к модели {model.Name}");
 
-            if (available.Count < requestedItem.Quantity)
+            var availableQuery = EquipmentAvailability.ForModel(
+                db.EqItems, model.Id, input.StartTime, input.EndTime, excludedBookingId);
+            var availableSelectedIds = await availableQuery
+                .Where(item => selectedIds.Contains(item.Id)).Select(item => item.Id).ToListAsync();
+            foreach (var selectedItem in selected)
             {
-                var conflicts = await GetBookingConflictsAsync(
-                    model.Id, input.StartTime, input.EndTime, excludedBookingId);
-                throw new GraphQLException(FormatConflictMessage(
-                    model.Name, available.Count, requestedItem.Quantity, conflicts));
+                if (!selectedItem.Operable)
+                    throw new GraphQLException($"Экземпляр {selectedItem.InventoryNumber} ({model.Name}) неисправен. Выберите другой инвентарный номер.");
+                if (!availableSelectedIds.Contains(selectedItem.Id))
+                    throw new GraphQLException($"Экземпляр {selectedItem.InventoryNumber} ({model.Name}) занят в выбранный период. Выберите другой инвентарный номер.");
             }
 
-            items.AddRange(available.Select(item => new BookingItem
+            items.AddRange(selected.Select(item => new BookingItem
             {
                 BookingId = excludedBookingId ?? 0,
                 EqItemId = item.Id,
                 StartDate = input.StartTime,
                 EndDate = input.EndTime,
-                IsReturned = false
+                IsReturned = false,
+                IsExplicitlySelected = true
             }));
         }
 
@@ -451,90 +456,6 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     }
 
     private sealed record EquipmentAllocation(List<BookingItem> Items, Dictionary<string, object> Warnings);
-
-    private async Task<List<BookingItem>> GetBookingConflictsAsync(
-        int eqModelId,
-        DateTime start,
-        DateTime end,
-        int? excludedBookingId = null)
-    {
-        return await db.BookingItems
-            .AsNoTracking()
-            .Include(bi => bi.Booking)
-            .ThenInclude(b => b.User)
-            .Include(bi => bi.EqItem)
-            .ThenInclude(i => i.EqModel)
-            .Where(bi => bi.EqItem.EqModelId == eqModelId)
-            .Where(bi => !excludedBookingId.HasValue || bi.BookingId != excludedBookingId.Value)
-            .Where(bi =>
-                (bi.Booking.Status == BookingStatus.Pending ||
-                 bi.Booking.Status == BookingStatus.Approved) &&
-                start < bi.EndDate && end > bi.StartDate)
-            .OrderBy(bi => bi.StartDate)
-            .ToListAsync();
-    }
-
-    private static string FormatConflictMessage(
-        string modelName,
-        int availableCount,
-        int requiredCount,
-        IReadOnlyList<BookingItem> conflicts)
-    {
-        var baseMessage =
-            $"Недостаточно {modelName}: свободно {availableCount}, нужно {requiredCount}.";
-
-        if (conflicts.Count == 0)
-            return baseMessage;
-
-        var groupedConflicts = conflicts
-            .GroupBy(conflict => new
-            {
-                conflict.BookingId,
-                conflict.StartDate,
-                conflict.EndDate,
-                conflict.Booking.User.Name,
-                conflict.Booking.User.Login,
-                conflict.Booking.User.TelegramUsername
-            })
-            .OrderBy(group => group.Key.StartDate)
-            .ThenBy(group => group.Key.Name)
-            .ToList();
-
-        var details = groupedConflicts
-            .Take(4)
-            .Select(group =>
-            {
-                var contact = string.IsNullOrWhiteSpace(group.Key.TelegramUsername)
-                    ? $"@{group.Key.Login}"
-                    : $"@{group.Key.TelegramUsername}";
-                var inventoryNumbers = group
-                    .Select(conflict => conflict.EqItem.InventoryNumber)
-                    .Distinct()
-                    .Order()
-                    .ToList();
-                var countText = inventoryNumbers.Count == 1
-                    ? "1 экземпляр"
-                    : $"{inventoryNumbers.Count} шт.";
-
-                return $"{group.Key.Name} ({contact}) — {group.Key.StartDate:dd.MM HH:mm}–{group.Key.EndDate:dd.MM HH:mm}: {countText}, {FormatInventoryNumbers(inventoryNumbers)}";
-            });
-
-        var rest = groupedConflicts.Count > 4
-            ? $" Еще бронирований: {groupedConflicts.Count - 4}."
-            : string.Empty;
-
-        return $"{baseMessage} Уже занято: {string.Join("; ", details)}.{rest}";
-
-        static string FormatInventoryNumbers(IReadOnlyList<string> inventoryNumbers)
-        {
-            const int visibleCount = 4;
-            var visible = inventoryNumbers.Take(visibleCount).ToList();
-            var rest = inventoryNumbers.Count - visible.Count;
-            var suffix = rest > 0 ? $" и еще {rest}" : string.Empty;
-
-            return $"инв. {string.Join(", ", visible)}{suffix}";
-        }
-    }
 
     private IQueryable<Booking> FindBookingWithIncludes()
     {
@@ -601,7 +522,13 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
                 throw new GraphQLException("ID модели оборудования должен быть больше 0");
 
             if (item.Quantity <= 0)
-                throw new GraphQLException($"Количество для модели с ID {item.EqModelId} должно быть больше 0");
+                throw new GraphQLException($"Выберите хотя бы один инвентарный номер для модели с ID {item.EqModelId}");
+
+            var selected = item.SelectedItemIds ?? [];
+            if (selected.Count != item.Quantity)
+                throw new GraphQLException("Выберите инвентарные номера для каждого экземпляра оборудования");
+            if (selected.Any(id => id <= 0) || selected.Distinct().Count() != selected.Count)
+                throw new GraphQLException("Один инвентарный номер нельзя выбрать несколько раз");
         }
 
         return equipment
@@ -609,7 +536,8 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             .OrderBy(group => group.Key)
             .Select(group => new CreateBookingEquipmentInput(
                 group.Key,
-                SumQuantity(group)))
+                SumQuantity(group),
+                MergeSelectedIds(group)))
             .ToList();
 
         static int SumQuantity(IGrouping<int, CreateBookingEquipmentInput> group)
@@ -618,6 +546,14 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             if (quantity > int.MaxValue)
                 throw new GraphQLException($"Слишком большое количество для модели с ID {group.Key}");
             return (int)quantity;
+        }
+
+        static int[] MergeSelectedIds(IGrouping<int, CreateBookingEquipmentInput> group)
+        {
+            var ids = group.SelectMany(item => item.SelectedItemIds ?? []).ToArray();
+            if (ids.Distinct().Count() != ids.Length)
+                throw new GraphQLException("Один инвентарный номер нельзя выбрать несколько раз");
+            return ids;
         }
     }
 
@@ -638,5 +574,6 @@ public record CreateBookingInput(
 
 public record CreateBookingEquipmentInput(
     int EqModelId,
-    int Quantity
+    int Quantity,
+    IReadOnlyList<int>? SelectedItemIds = null
 );

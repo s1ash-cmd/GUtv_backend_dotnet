@@ -159,6 +159,9 @@ namespace GUtv_backend_dotnet.Migrations
                     b.Property<int>("EqItemId")
                         .HasColumnType("integer");
 
+                    b.Property<bool>("IsExplicitlySelected")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsReturned")
                         .HasColumnType("boolean");
 
@@ -228,6 +231,10 @@ namespace GUtv_backend_dotnet.Migrations
 
                     b.Property<int>("Quantity")
                         .HasColumnType("integer");
+
+                    b.PrimitiveCollection<int[]>("SelectedItemIds")
+                        .IsRequired()
+                        .HasColumnType("integer[]");
 
                     b.HasKey("Id");
 

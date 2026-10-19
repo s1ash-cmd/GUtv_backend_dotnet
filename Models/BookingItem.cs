@@ -13,4 +13,5 @@ public class BookingItem
     public DateTime StartDate { get; set; }
     public DateTime EndDate { get; set; }
     public bool IsReturned { get; set; } = false;
+    public bool IsExplicitlySelected { get; set; }
 }
