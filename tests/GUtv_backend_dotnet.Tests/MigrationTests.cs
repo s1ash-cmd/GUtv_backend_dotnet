@@ -11,6 +11,20 @@ public class MigrationTests
     private const string CartEditingMigration = "20260828101054_AddCartEditingBooking";
 
     [Fact]
+    public void BanReasonMigrationAddsAnOptionalCommentWithoutChangingExistingBans()
+    {
+        using var db = CreateContext();
+        var migration = Assert.Single(db.Database.GetMigrations(), name => name.EndsWith("_AddUserBanReason"));
+        var sql = db.GetService<IMigrator>().GenerateScript("20261019181025_AddInventorySelections", migration);
+        Assert.Contains("ADD \"BanReason\" character varying(1000)", sql.Replace("ADD COLUMN", "ADD"));
+        Assert.DoesNotContain("DROP", sql);
+        var property = db.Model.FindEntityType(typeof(GUtv_backend_dotnet.Models.User))!.FindProperty("BanReason")!;
+        Assert.True(property.IsNullable);
+        Assert.Equal(1000, property.GetMaxLength());
+        Assert.False(db.Database.HasPendingModelChanges());
+    }
+
+    [Fact]
     public void CartSchemaMigrationIsDiscoverableBeforeItsDependentMigration()
     {
         using var db = CreateContext();

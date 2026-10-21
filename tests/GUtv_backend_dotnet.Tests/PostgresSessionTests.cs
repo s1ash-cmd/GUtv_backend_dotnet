@@ -229,17 +229,27 @@ public class PostgresSessionTests : IAsyncLifetime
     }
 
     [PostgresFact]
-    public async Task BanAndUnbanDoesNotRestoreAccessOrRefresh()
+    public async Task BanPreservesLoginAccessAndRefresh()
     {
         var first = await LoginAsync("first");
         await using var db = new AppDbContext(Options);
-        var users = new UserService(db);
-        await users.SetBanned(1, true);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await SendAsync("{ me { id } }", first.AccessToken)).StatusCode);
-        await AssertRefreshRejectedAsync(first.RefreshToken);
-        await users.SetBanned(1, false);
-        await AssertRefreshRejectedAsync(first.RefreshToken);
+        await new UserService(db).SetRole(2, UserRole.Admin);
+        var admin = await LoginAsync("second");
+        var banned = await QueryAsync("""
+            mutation { setUserBanned(userId: 1, banned: true, reason: "  Нарушение правил  ") { banned banReason } }
+            """, admin.AccessToken);
+        Assert.True(banned.GetProperty("setUserBanned").GetProperty("banned").GetBoolean());
+        Assert.Equal("Нарушение правил", banned.GetProperty("setUserBanned").GetProperty("banReason").GetString());
+        var me = await QueryAsync("{ me { id banned banReason } }", first.AccessToken);
+        Assert.True(me.GetProperty("me").GetProperty("banned").GetBoolean());
+        var rotated = await RefreshAsync(first.RefreshToken);
         await LoginAsync("first");
+        var unbanned = await QueryAsync("""
+            mutation { setUserBanned(userId: 1, banned: false) { banned banReason } }
+            """, admin.AccessToken);
+        Assert.False(unbanned.GetProperty("setUserBanned").GetProperty("banned").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, unbanned.GetProperty("setUserBanned").GetProperty("banReason").ValueKind);
+        await RefreshAsync(rotated.RefreshToken);
     }
 
     [PostgresFact]

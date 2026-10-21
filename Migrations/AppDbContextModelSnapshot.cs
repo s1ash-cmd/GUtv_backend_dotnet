@@ -345,6 +345,10 @@ namespace GUtv_backend_dotnet.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
+                    b.Property<string>("BanReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
                     b.Property<bool>("Banned")
                         .HasColumnType("boolean");
 

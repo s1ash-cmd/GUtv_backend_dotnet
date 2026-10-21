@@ -35,8 +35,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     internal async Task<Booking> CreateBookingInTransactionAsync(CreateBookingInput input, int userId)
     {
         RequireTransaction();
-        var user = await db.Users.FindAsync(userId)
-            ?? throw new GraphQLException("Пользователь не найден");
+        var user = await EnsureCanBookAsync(userId);
 
         ValidateBookingInput(input);
 
@@ -93,6 +92,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         bool isAdmin)
     {
         RequireTransaction();
+        await EnsureCanBookAsync(actorUserId);
         await AcquireAdvisoryLockAsync(2, bookingId);
 
         var booking = await db.Bookings
@@ -477,6 +477,21 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return JsonSerializer.Serialize(warnings);
     }
 
+    private async Task<User> EnsureCanBookAsync(int userId)
+    {
+        // Read current state even when an earlier request operation already tracked this user.
+        var user = await db.Users.AsNoTracking().SingleOrDefaultAsync(u => u.Id == userId)
+            ?? throw new GraphQLException("Пользователь не найден");
+        if (user.Banned)
+        {
+            var message = "Вам запрещено бронировать оборудование";
+            if (!string.IsNullOrWhiteSpace(user.BanReason))
+                message += $". Причина блокировки: {user.BanReason}";
+            throw new GraphQLException(message);
+        }
+        return user;
+    }
+
     private static void ValidateBookingInput(CreateBookingInput input)
     {
         if (input.StartTime >= input.EndTime)
@@ -490,7 +505,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
     private async Task RequireDecisionActorAsync(int userId, bool requireAdmin)
     {
         var actor = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.Id == userId);
-        if (actor is null || actor.Banned || (requireAdmin && actor.Role != UserRole.Admin))
+        if (actor is null || (requireAdmin && (actor.Banned || actor.Role != UserRole.Admin)))
             throw new GraphQLException("У вас нет прав для этого действия");
     }
 

@@ -54,3 +54,13 @@ versions for every decision, required GraphQL arguments, whitespace-only reasons
 empty equipment models, and bounded admin/status notifications. All Telegram
 requests use a fake HTTP handler. Migration tests verify default revision and model
 snapshot consistency without connecting to PostgreSQL.
+
+## Booking bans
+
+A ban only restricts booking creation and editing; login, token rotation, browsing,
+and existing sessions remain available. Administrators may supply an optional reason
+(up to 1000 characters). Checkout and editing return that reason without losing cart
+contents. Unbanning clears the reason. The `AddUserBanReason` migration adds a nullable
+column and preserves existing bans; apply the backend before its matching frontend.
+Regression tests cover login, existing sessions, direct and cart operations, fresh ban
+state with a tracked user, reason normalization and clearing, and migration metadata.

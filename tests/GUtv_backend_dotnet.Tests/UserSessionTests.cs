@@ -73,15 +73,59 @@ public class UserSessionTests
     }
 
     [Fact]
-    public async Task BanThenUnbanDoesNotRestoreOldSessions()
+    public async Task BannedUserCanLoginRefreshAndKeepExistingSession()
     {
         await using var test = await SessionDatabase.OpenAsync();
         var first = await test.Service.CreateAsync(1, "first");
         await new UserService(test.Db).SetBanned(1, true);
-        await Assert.ThrowsAsync<GraphQLException>(() => test.Service.CreateAsync(1, "banned"));
-        await new UserService(test.Db).SetBanned(1, false);
-        await Assert.ThrowsAsync<GraphQLException>(() => test.Service.RotateAsync(first.RefreshToken));
-        Assert.NotNull((await test.Db.UserSessions.AsNoTracking().SingleAsync()).RevokedAt);
+        var banned = await test.Service.CreateAsync(1, "banned");
+        Assert.True(banned.User.Banned);
+        await test.Service.RotateAsync(first.RefreshToken);
+        await test.Service.RotateAsync(banned.RefreshToken);
+        var reached = false;
+        var context = PrincipalContext(first);
+        await new SessionAuthenticationMiddleware(_ => { reached = true; return Task.CompletedTask; })
+            .InvokeAsync(context, test.Db);
+        Assert.True(reached);
+        Assert.Equal(200, context.Response.StatusCode);
+        Assert.All(await test.Db.UserSessions.AsNoTracking().ToListAsync(), session => Assert.Null(session.RevokedAt));
+    }
+
+    [Fact]
+    public async Task BannedUserCanLoginThroughMutationWithCorrectPassword()
+    {
+        await using var test = await SessionDatabase.OpenAsync();
+        var users = new UserService(test.Db);
+        var user = (await test.Db.Users.FindAsync(1))!;
+        user.PasswordHash = BCrypt.Net.BCrypt.HashPassword("test-password", workFactor: 4);
+        await test.Db.SaveChangesAsync();
+        await users.SetBanned(user.Id, true, "Нарушение правил");
+        var mutation = new GUtv_backend_dotnet.GraphQL.Mutations.UserMutation();
+        var payload = await mutation.Login(new("first", "test-password"), users, test.Service,
+            new HttpContextAccessor { HttpContext = new DefaultHttpContext() });
+        Assert.True(payload.User.Banned);
+        Assert.Equal("Нарушение правил", payload.User.BanReason);
+        Assert.NotEmpty(payload.AccessToken);
+        await Assert.ThrowsAsync<GraphQLException>(() => mutation.Login(new("first", "wrong"),
+            users, test.Service, new HttpContextAccessor()));
+    }
+
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("   ", null)]
+    [InlineData("  Нарушение правил  ", "Нарушение правил")]
+    public async Task BanReasonIsOptionalTrimmedAndClearedOnUnban(string? reason, string? expected)
+    {
+        await using var test = await SessionDatabase.OpenAsync();
+        var users = new UserService(test.Db);
+        await users.SetBanned(1, true, reason);
+        Assert.Equal(expected, (await test.Db.Users.AsNoTracking().SingleAsync(u => u.Id == 1)).BanReason);
+        await users.SetBanned(1, false, "ignored");
+        var user = await test.Db.Users.AsNoTracking().SingleAsync(u => u.Id == 1);
+        Assert.False(user.Banned);
+        Assert.Null(user.BanReason);
+        await Assert.ThrowsAsync<GraphQLException>(() => users.SetBanned(1, true, new string('x', 1001)));
+        Assert.False((await test.Db.Users.AsNoTracking().SingleAsync(u => u.Id == 1)).Banned);
     }
 
     [Fact]
@@ -124,7 +168,6 @@ public class UserSessionTests
 
     [Theory]
     [InlineData("expired")]
-    [InlineData("banned")]
     [InlineData("missing-sid")]
     [InlineData("unknown-sid")]
     public async Task RequestValidationRejectsUnusableSessions(string reason)
@@ -132,7 +175,6 @@ public class UserSessionTests
         await using var test = await SessionDatabase.OpenAsync();
         var first = await test.Service.CreateAsync(1, "first");
         if (reason == "expired") await test.Db.UserSessions.ExecuteUpdateAsync(s => s.SetProperty(x => x.ExpiresAt, DateTime.UtcNow.AddSeconds(-1)));
-        if (reason == "banned") await test.Db.Users.ExecuteUpdateAsync(s => s.SetProperty(x => x.Banned, true));
         var context = PrincipalContext(first);
         var identity = (ClaimsIdentity)context.User.Identity!;
         if (reason == "missing-sid") identity.RemoveClaim(identity.FindFirst("sid")!);
@@ -191,6 +233,7 @@ internal sealed class SessionDatabase(SqliteConnection connection, AppDbContext 
     {
         var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
+        connection.CreateFunction("btrim", (string value) => value.Trim());
         var db = new TestDbContext(new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection).Options);
         await db.Database.EnsureCreatedAsync();
         db.Users.AddRange(new User { Id = 1, Login = "first", Name = "First", JoinYear = DateTime.UtcNow.Year },

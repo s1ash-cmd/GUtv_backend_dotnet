@@ -125,21 +125,18 @@ public class UserService
         return user;
     }
 
-    public async Task<User> SetBanned(int userId, bool banned)
+    public async Task<User> SetBanned(int userId, bool banned, string? reason = null)
     {
-        await using var transaction = await _db.Database.BeginTransactionAsync();
+        var normalizedReason = banned && !string.IsNullOrWhiteSpace(reason) ? reason.Trim() : null;
+        if (normalizedReason?.Length > 1000)
+            throw new GraphQLException("Причина блокировки не должна превышать 1000 символов");
+
         var user = await _db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
         user.Banned = banned;
+        user.BanReason = normalizedReason;
         await _db.SaveChangesAsync();
-        if (banned)
-        {
-            var now = DateTime.UtcNow;
-            await _db.UserSessions.Where(s => s.UserId == userId && s.RevokedAt == null)
-                .ExecuteUpdateAsync(setters => setters.SetProperty(s => s.RevokedAt, now));
-        }
-        await transaction.CommitAsync();
         return user;
     }
 

@@ -18,6 +18,61 @@ public class BookingAllocationTests
     private static CreateBookingInput Input(params CreateBookingEquipmentInput[] equipment) =>
         new("Съемка", Start, Start.AddHours(2), null, equipment);
 
+    [Theory]
+    [InlineData(false, null)]
+    [InlineData(true, "Повреждение оборудования")]
+    public async Task BanRejectsDirectAndCartCreationWithReasonWithoutLosingCart(bool withReason, string? reason)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Carts.SetCartItemSelectionAsync(1, 1, [1]);
+        await fixture.Carts.SetCartDetailsAsync(1, new("Съемка", Start, Start.AddHours(2), null));
+        // Leave a stale user in the change tracker to ensure the ban is read from the database.
+        await fixture.Db.Users.Where(u => u.Id == 1).ExecuteUpdateAsync(s => s
+            .SetProperty(u => u.Banned, true).SetProperty(u => u.BanReason, reason));
+        foreach (var operation in new Func<Task<Booking>>[] {
+            () => fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1),
+            () => fixture.Carts.CreateBookingFromCartAsync(1) })
+        {
+            var error = await Assert.ThrowsAsync<GraphQLException>(operation);
+            var message = Assert.Single(error.Errors).Message;
+            Assert.Contains("Вам запрещено бронировать оборудование", message);
+            if (withReason) Assert.Contains(reason!, message);
+            Assert.Empty(await fixture.Db.Bookings.ToListAsync());
+            Assert.Equal(new[] { 1 }, Assert.Single((await fixture.Carts.GetOrCreateCartAsync(1)).Items).SelectedItemIds);
+        }
+        await new UserService(fixture.Db).SetBanned(1, false);
+        Assert.NotNull(await fixture.Carts.CreateBookingFromCartAsync(1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BanRejectsDirectAndCartBookingEdits(bool fromCart)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var input = Input(new CreateBookingEquipmentInput(1, 1, [1]));
+        var booking = await fixture.Bookings.CreateBookingAsync(input, 1);
+        await fixture.Carts.PrepareBookingEditAsync(1, booking.Id, false);
+        await new UserService(fixture.Db).SetBanned(1, true, "Нарушение правил");
+        var error = await Assert.ThrowsAsync<GraphQLException>(() => fromCart
+            ? fixture.Carts.UpdateBookingFromCartAsync(1, booking.Id, false)
+            : fixture.Bookings.UpdateBookingAsync(booking.Id, input, 1, false));
+        Assert.Contains("Нарушение правил", Assert.Single(error.Errors).Message);
+        Assert.Equal(1, (await fixture.Db.Bookings.AsNoTracking().SingleAsync()).Revision);
+        Assert.Single((await fixture.Carts.GetOrCreateCartAsync(1)).Items);
+    }
+
+    [Fact]
+    public async Task BannedOwnerCanStillReadAndCancelExistingBooking()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        await new UserService(fixture.Db).SetBanned(1, true, "Нарушение правил");
+        Assert.Equal(booking.Id, (await fixture.Bookings.GetBookingByIdAsync(booking.Id, 1, false)).Id);
+        var cancelled = await fixture.Bookings.CancelBookingAsync(booking.Id, 1, false, booking.Revision);
+        Assert.Equal(BookingStatus.Cancelled, cancelled.Status);
+    }
+
     [Fact]
     public async Task MultipleInventoryNumbersAreBookedExactlyAsSelected()
     {

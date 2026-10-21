@@ -22,7 +22,6 @@ public class UserSessionService(AppDbContext db, UserService userService, AuthSe
         try
         {
             var user = await LockUserAsync(userId);
-            if (user.Banned) throw new GraphQLException("Пользователь заблокирован");
             user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
             var now = DateTime.UtcNow;
             var token = authService.GenerateRefreshToken();
@@ -55,10 +54,9 @@ public class UserSessionService(AppDbContext db, UserService userService, AuthSe
         {
             var session = await db.UserSessions.AsNoTracking().SingleOrDefaultAsync(s => s.RefreshTokenHash == hash)
                 ?? throw new GraphQLException("Недействительный refresh token");
-            // Lock the account before its sessions, matching logout-all and banning.
+            // Lock the account before its sessions, matching logout-all.
             // This also serializes role upgrades with administrative role changes.
             var user = await LockUserAsync(session.UserId);
-            if (user.Banned) throw new GraphQLException("Пользователь заблокирован");
             var now = DateTime.UtcNow;
             var token = authService.GenerateRefreshToken();
             var updated = await db.UserSessions

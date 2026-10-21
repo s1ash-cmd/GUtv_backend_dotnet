@@ -38,9 +38,6 @@ public class UserMutation
         if (user == null || !userService.VerifyPassword(input.Password, user.PasswordHash))
             throw new GraphQLException("Неверный логин или пароль");
 
-        if (user.Banned)
-            throw new GraphQLException("Пользователь заблокирован");
-
         var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
         return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
     }
@@ -99,13 +96,14 @@ public class UserMutation
         bool banned,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
-        UserService userService)
+        UserService userService,
+        string? reason = null)
     {
         var currentUserId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
         if (currentUserId == userId)
             throw new GraphQLException("Нельзя изменять собственный статус через админскую операцию");
 
-        return userService.SetBanned(userId, banned);
+        return userService.SetBanned(userId, banned, reason);
     }
 
     [Authorize]

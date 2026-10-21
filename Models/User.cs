@@ -21,6 +21,7 @@ public class User
 
     public UserRole Role { get; set; } = UserRole.User;
     public bool Banned { get; set; }
+    public string? BanReason { get; set; }
     public int JoinYear { get; set; }
     public ICollection<Booking> Bookings { get; set; } = [];
     public Cart? Cart { get; set; }

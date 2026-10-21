@@ -143,7 +143,7 @@ public class UserAvatarTests
                     "PasswordHash" TEXT NOT NULL DEFAULT '', "Name" TEXT NOT NULL, "AvatarSeed" TEXT,
                     "AvatarUrl" TEXT, "TelegramChatId" INTEGER, "TelegramUsername" TEXT,
                     "TelegramLinkCode" TEXT, "TelegramLinkCodeExpiry" TEXT,
-                    "Role" INTEGER NOT NULL, "Banned" INTEGER NOT NULL, "JoinYear" INTEGER NOT NULL
+                    "Role" INTEGER NOT NULL, "Banned" INTEGER NOT NULL, "BanReason" TEXT, "JoinYear" INTEGER NOT NULL
                 );
                 INSERT INTO "Users" ("Id", "Login", "Name", "AvatarSeed", "Role", "Banned", "JoinYear")
                 VALUES (1, 'one', 'First user', 'existing-robot', 0, 0, 2026), (2, 'two', 'Second user', NULL, 0, 0, 2026);

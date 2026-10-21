@@ -20,7 +20,7 @@ public class SessionAuthenticationMiddleware(RequestDelegate next)
             var now = DateTime.UtcNow;
             var currentUser = await db.UserSessions.AsNoTracking()
                 .Where(s => s.Id == sessionId && s.UserId == userId && s.RevokedAt == null &&
-                    s.ExpiresAt > now && !s.User.Banned)
+                    s.ExpiresAt > now)
                 .Select(s => new { s.User.Role })
                 .SingleOrDefaultAsync(context.RequestAborted);
             if (currentUser is null)

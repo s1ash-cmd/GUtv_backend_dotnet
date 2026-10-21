@@ -35,16 +35,12 @@ public class RefreshTokenTests
         Assert.Equal(UserSessionService.HashRefreshToken(session.RefreshToken), (await db.UserSessions.AsNoTracking().SingleAsync()).RefreshTokenHash);
     }
 
-    [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    public async Task BannedOrExpiredSessionCannotRotate(bool banned, bool expired)
+    [Fact]
+    public async Task ExpiredSessionCannotRotate()
     {
         await using var connection = await OpenDatabaseAsync();
         await using var db = await CreateContextAsync(connection);
-        var user = await db.Users.SingleAsync();
-        user.Banned = banned;
-        if (expired) (await db.UserSessions.SingleAsync()).ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
+        (await db.UserSessions.SingleAsync()).ExpiresAt = DateTime.UtcNow.AddMinutes(-1);
         await db.SaveChangesAsync();
 
         await Assert.ThrowsAsync<GraphQLException>(() =>
