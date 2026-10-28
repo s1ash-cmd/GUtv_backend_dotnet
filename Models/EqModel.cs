@@ -10,5 +10,6 @@ public class EqModel
     public string AttributesJson { get; set; } = "{}";
     public List<EqItem> EqItems { get; set; } = [];
     public List<EqPhoto> Photos { get; set; } = [];
+    [GraphQLIgnore]
     public List<CartItem> CartItems { get; set; } = [];
 }

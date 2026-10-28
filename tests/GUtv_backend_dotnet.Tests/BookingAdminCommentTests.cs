@@ -52,16 +52,15 @@ public class BookingAdminCommentTests
 
     public static IEnumerable<object?[]> MutationCases()
     {
-        foreach (var path in new[] { "web", "telegram-api" })
         foreach (var reject in new[] { false, true })
         foreach (var comments in Comments)
-            yield return [path, reject, comments[0], comments[1]];
+            yield return [reject, comments[0], comments[1]];
     }
 
     [Theory]
     [MemberData(nameof(MutationCases))]
-    public async Task WebAndTelegramGraphqlDecisionsPersistOnlyRealComments(
-        string path, bool reject, string? comment, string? expected)
+    public async Task WebGraphqlDecisionsPersistOnlyRealComments(
+        bool reject, string? comment, string? expected)
     {
         await using var fixture = await Fixture.CreateAsync();
         using var scope = fixture.Provider.CreateScope();
@@ -69,30 +68,19 @@ public class BookingAdminCommentTests
         var userService = scope.ServiceProvider.GetRequiredService<UserService>();
         var bookings = scope.ServiceProvider.GetRequiredService<BookingService>();
         var mutations = new BookingMutations();
-        if (path == "telegram-api")
+        var accessor = new HttpContextAccessor
         {
-            var security = new BotSecurityService(fixture.Configuration);
-            if (reject)
-                await mutations.RejectBookingByTelegram(BotToken, AdminChat, 1, 1, comment, security, userService, bookings);
-            else
-                await mutations.ApproveBookingByTelegram(BotToken, AdminChat, 1, 1, comment, security, userService, bookings);
-        }
-        else
-        {
-            var accessor = new HttpContextAccessor
+            HttpContext = new DefaultHttpContext
             {
-                HttpContext = new DefaultHttpContext
-                {
-                    User = new ClaimsPrincipal(new ClaimsIdentity(
-                        [new Claim(ClaimTypes.NameIdentifier, "2"), new Claim(ClaimTypes.Role, "Admin")], "Bearer"))
-                }
-            };
-            var equipment = scope.ServiceProvider.GetRequiredService<EquipmentService>();
-            if (reject)
-                await mutations.RejectBooking(1, 1, comment, accessor, equipment, userService, bookings);
-            else
-                await mutations.ApproveBooking(1, 1, comment, accessor, equipment, userService, bookings);
-        }
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, "2"), new Claim(ClaimTypes.Role, "Admin")], "Bearer"))
+            }
+        };
+        var equipment = scope.ServiceProvider.GetRequiredService<EquipmentService>();
+        if (reject)
+            await mutations.RejectBooking(1, 1, comment, accessor, equipment, userService, bookings);
+        else
+            await mutations.ApproveBooking(1, 1, comment, accessor, equipment, userService, bookings);
 
         db.ChangeTracker.Clear();
         var persisted = await db.Bookings.SingleAsync();
@@ -281,26 +269,6 @@ public class BookingAdminCommentTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task TelegramApiRejectsBannedAdministrator(bool reject)
-    {
-        await using var fixture = await Fixture.CreateAsync();
-        using var scope = fixture.Provider.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        (await db.Users.FindAsync(2))!.Banned = true;
-        await db.SaveChangesAsync();
-        var mutations = new BookingMutations();
-        var security = new BotSecurityService(fixture.Configuration);
-        var users = scope.ServiceProvider.GetRequiredService<UserService>();
-        var bookings = scope.ServiceProvider.GetRequiredService<BookingService>();
-        await Assert.ThrowsAsync<HotChocolate.GraphQLException>(() => reject
-            ? mutations.RejectBookingByTelegram(BotToken, AdminChat, 1, 1, null, security, users, bookings)
-            : mutations.ApproveBookingByTelegram(BotToken, AdminChat, 1, 1, null, security, users, bookings));
-        Assert.Equal(BookingStatus.Pending, (await db.Bookings.AsNoTracking().SingleAsync()).Status);
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
     public async Task DecisionServiceReadsFreshPermissionsEvenWhenAdminIsAlreadyTracked(bool banned)
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -331,12 +299,22 @@ public class BookingAdminCommentTests
     }
 
     [Fact]
+    public void GraphqlResolversDoNotAcceptTheBotToken()
+    {
+        // The bot runs in-process and calls services directly; its token must never be an API credential.
+        var parameters = typeof(BookingMutations).Assembly.GetTypes()
+            .Where(type => type.Namespace?.StartsWith("GUtv_backend_dotnet.GraphQL", StringComparison.Ordinal) == true)
+            .SelectMany(type => type.GetMethods())
+            .SelectMany(method => method.GetParameters());
+        Assert.DoesNotContain(parameters, parameter => parameter.Name == "botToken");
+    }
+
+    [Fact]
     public async Task GraphqlDecisionsRequireAnExplicitRevision()
     {
         await using var fixture = await Fixture.CreateAsync();
         var executor = await fixture.Provider.GetRequiredService<IRequestExecutorResolver>().GetRequestExecutorAsync();
-        foreach (var name in new[] { "approveBooking", "rejectBooking", "completeBooking", "cancelBooking",
-                     "approveBookingByTelegram", "rejectBookingByTelegram" })
+        foreach (var name in new[] { "approveBooking", "rejectBooking", "completeBooking", "cancelBooking" })
         {
             var argument = executor.Schema.MutationType!.Fields[name].Arguments["expectedRevision"];
             Assert.IsType<NonNullType>(argument.Type);
@@ -465,13 +443,13 @@ public class BookingAdminCommentTests
                 new DbContextOptionsBuilder<AppDbContext>().UseSqlite(connection)
                     .AddInterceptors(new AdvisoryLockInterceptor()).Options));
             services.AddScoped<UserService>();
+            services.AddSingleton<RequestRateLimiter>();
             services.AddScoped<EquipmentService>();
             services.AddScoped<BookingService>();
             services.AddScoped<TelegramNotificationService>();
             services.AddSingleton<AnnouncementBotHandler>();
             services.AddHttpContextAccessor();
             services.AddScoped<CartService>();
-            services.AddScoped<BotSecurityService>();
             services.AddAuthorization();
             services.AddGraphQLServer()
                 .AddQueryType(descriptor => descriptor.Name("Query").Field("ok").Resolve(true))

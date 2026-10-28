@@ -23,6 +23,8 @@ public class User
     public bool Banned { get; set; }
     public string? BanReason { get; set; }
     public int JoinYear { get; set; }
+    [GraphQLIgnore]
     public ICollection<Booking> Bookings { get; set; } = [];
+    [GraphQLIgnore]
     public Cart? Cart { get; set; }
 }

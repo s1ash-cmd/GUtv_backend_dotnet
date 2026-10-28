@@ -84,22 +84,4 @@ public class BookingQueries
     [Authorize(Roles = ["Admin"])]
     public Task<List<Booking>> GetBookingsByInventoryNumber(string inventoryNumber, BookingService bookingService) =>
         bookingService.GetBookingsByInventoryNumberAsync(inventoryNumber);
-
-    public async Task<List<Booking>> GetBookingsByTelegramChatId(
-        string botToken,
-        long chatId,
-        BotSecurityService botSecurityService,
-        UserService userService,
-        BookingService bookingService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-
-        if (chatId <= 0)
-            throw new GraphQLException("Некорректный chatId");
-
-        var user = await userService.GetByTelegramChatIdAsync(chatId)
-            ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
-
-        return await bookingService.GetBookingsByUserAsync(user.Id);
-    }
 }

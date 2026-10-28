@@ -4,6 +4,7 @@ public class UserSession
 {
     public Guid Id { get; set; }
     public int UserId { get; set; }
+    [GraphQLIgnore]
     public User User { get; set; } = null!;
     [GraphQLIgnore]
     public string RefreshTokenHash { get; set; } = "";

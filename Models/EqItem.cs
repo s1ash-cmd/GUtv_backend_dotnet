@@ -7,5 +7,7 @@ public class EqItem
     public EqModel EqModel { get; set; } = null!;
     public string InventoryNumber { get; set; } = string.Empty;
     public bool Operable { get; set; } = true;
+    // Not exposed: equipment is public, its booking history (and through it users) is not.
+    [GraphQLIgnore]
     public List<BookingItem> BookingItems { get; set; } = [];
 }

@@ -1,12 +1,11 @@
 using System.Security.Claims;
 using System.Text;
 using GUtv_backend_dotnet.Data;
-using GUtv_backend_dotnet.GraphQL.Mutations;
-using GUtv_backend_dotnet.GraphQL.Queries;
-using GUtv_backend_dotnet.GraphQL.Types;
+using GUtv_backend_dotnet.GraphQL;
 using GUtv_backend_dotnet.Services;
 using GUtv_backend_dotnet.Services.Telegram;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Telegram.Bot;
@@ -41,6 +40,10 @@ builder.Services
 
 builder.Services.AddAuthorization();
 builder.Services.AddHttpContextAccessor();
+// Rate limits key on the client IP. nginx on this host must send X-Forwarded-For;
+// the header is trusted only from loopback proxies (the framework default).
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto);
 
 var allowedOrigins = builder.Configuration
     .GetSection("Cors:AllowedOrigins")
@@ -72,7 +75,7 @@ builder.Services.AddScoped<EquipmentService>();
 builder.Services.AddScoped<BookingService>();
 builder.Services.AddScoped<CartService>();
 builder.Services.AddScoped<AnnouncementService>();
-builder.Services.AddScoped<BotSecurityService>();
+builder.Services.AddSingleton<RequestRateLimiter>();
 
 var botToken = builder.Configuration["BotConfiguration:BotToken"]
     ?? throw new InvalidOperationException("Bot Token is not configured");
@@ -89,37 +92,17 @@ if (builder.Configuration.GetValue("BotConfiguration:Enabled", true))
     builder.Services.AddHostedService<AnnouncementDeliveryWorker>();
 }
 
-builder.Services
-    .AddGraphQLServer()
-    .AddQueryType<Query>()
-    .AddMutationType<Mutation>()
-    .AddProjections()
-    .AddFiltering()
-    .AddType<UserRoleType>()
-    .AddType<EqCategoryType>()
-    .AddType<EqAccessType>()
-    .AddType<BookingStatusType>()
-    .AddTypeExtension<UserQueries>()
-    .AddTypeExtension<UserMutation>()
-    .AddTypeExtension<EquipmentQueries>()
-    .AddTypeExtension<EquipmentMutations>()
-    .AddTypeExtension<BookingQueries>()
-    .AddTypeExtension<BookingMutations>()
-    .AddTypeExtension<CartQueries>()
-    .AddTypeExtension<CartMutations>()
-    .AddTypeExtension<AnnouncementQueries>()
-    .AddTypeExtension<AnnouncementMutations>()
-    .AddSorting()
-    .AddAuthorization();
+builder.Services.AddGutvGraphQL(builder.Environment);
 
 var app = builder.Build();
 
+app.UseForwardedHeaders();
 app.UseCors("ConfiguredOrigins");
 app.UseAuthentication();
 app.UseMiddleware<SessionAuthenticationMiddleware>();
 app.UseAuthorization();
 
-app.MapGraphQL();
+app.MapGutvGraphQL();
 
 app.MapGet("/avatars/{filename}", (string filename, AvatarImageStore images, HttpContext context) =>
 {

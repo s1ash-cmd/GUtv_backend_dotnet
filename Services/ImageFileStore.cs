@@ -1,5 +1,7 @@
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats;
+using SixLabors.ImageSharp.Formats.Jpeg;
+using SixLabors.ImageSharp.Formats.Png;
 using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.Processing;
 using Path = System.IO.Path;
@@ -10,6 +12,9 @@ namespace GUtv_backend_dotnet.Services;
 public class ImageFileStore(string storageDirectory, string urlPrefix, Size targetSize, ResizeMode resizeMode, ILogger logger)
 {
     public const int MaxFileSize = 5 * 1024 * 1024;
+    // Uploads never reach decoders for other formats, such as TIFF.
+    private static readonly Configuration DecoderConfiguration = new(
+        new JpegConfigurationModule(), new PngConfigurationModule(), new WebpConfigurationModule());
     private readonly string directory = Path.GetFullPath(storageDirectory);
     private readonly SemaphoreSlim processing = new(2, 2);
 
@@ -36,7 +41,7 @@ public class ImageFileStore(string storageDirectory, string urlPrefix, Size targ
                 throw new GraphQLException("Фото должно быть не больше 5 МБ");
 
             using var input = new MemoryStream(bytes, writable: false);
-            var options = new DecoderOptions { MaxFrames = 1, TargetSize = new Size(Math.Max(1024, targetSize.Width), Math.Max(1024, targetSize.Height)) };
+            var options = new DecoderOptions { Configuration = DecoderConfiguration, MaxFrames = 1, TargetSize = new Size(Math.Max(1024, targetSize.Width), Math.Max(1024, targetSize.Height)) };
             var info = await Image.IdentifyAsync(options, input, cancellationToken);
             var format = info.Metadata.DecodedImageFormat?.Name.ToUpperInvariant();
             if (format is not ("JPEG" or "PNG" or "WEBP"))

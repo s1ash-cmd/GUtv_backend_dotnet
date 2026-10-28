@@ -4,6 +4,7 @@ public class CartItem
 {
     public int Id { get; set; }
     public int CartId { get; set; }
+    [GraphQLIgnore]
     public Cart Cart { get; set; } = null!;
     public int EqModelId { get; set; }
     public EqModel EqModel { get; set; } = null!;

@@ -215,7 +215,7 @@ public class BookingPaginationTests
         services.AddScoped<BookingService>();
         services.AddScoped<EquipmentService>();
         services.AddScoped<UserService>();
-        services.AddScoped<BotSecurityService>();
+        services.AddSingleton<RequestRateLimiter>();
         services.AddGraphQLServer()
             .AddQueryType<Query>()
             .AddTypeExtension<BookingQueries>()

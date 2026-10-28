@@ -4,6 +4,7 @@ public class Cart
 {
     public int Id { get; set; }
     public int UserId { get; set; }
+    [GraphQLIgnore]
     public User User { get; set; } = null!;
     public string Reason { get; set; } = "";
     public DateTime? StartTime { get; set; }

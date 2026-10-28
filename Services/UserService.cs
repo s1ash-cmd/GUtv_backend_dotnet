@@ -142,17 +142,26 @@ public class UserService
 
     public async Task<string> GenerateTelegramLinkCode(int userId)
     {
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        await LockTelegramLinksAsync();
+
         var user = await _db.Users.FindAsync(userId)
             ?? throw new GraphQLException("Пользователь не найден");
 
         if (user.TelegramChatId.HasValue)
             throw new GraphQLException("Telegram уже привязан");
 
-        var code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+        var now = DateTime.UtcNow;
+        string code;
+        do code = RandomNumberGenerator.GetInt32(100000, 1000000).ToString();
+        while (await _db.Users.AnyAsync(u =>
+                   u.Id != userId && u.TelegramLinkCode == code && u.TelegramLinkCodeExpiry > now));
+
         user.TelegramLinkCode = code;
-        user.TelegramLinkCodeExpiry = DateTime.UtcNow.AddMinutes(10);
+        user.TelegramLinkCodeExpiry = now.AddMinutes(10);
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
         return code;
     }
 
@@ -161,11 +170,13 @@ public class UserService
         if (chatId <= 0)
             throw new GraphQLException("Привязать Telegram можно только в личном чате с ботом");
 
-        var user = await _db.Users.FirstOrDefaultAsync(u => u.TelegramLinkCode == code)
-            ?? throw new GraphQLException("Неверный код привязки");
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+        await LockTelegramLinksAsync();
 
-        if (user.TelegramLinkCodeExpiry < DateTime.UtcNow)
-            throw new GraphQLException("Срок действия кода истёк");
+        var now = DateTime.UtcNow;
+        var user = await _db.Users.FirstOrDefaultAsync(u =>
+                       u.TelegramLinkCode == code && u.TelegramLinkCodeExpiry > now)
+            ?? throw new GraphQLException("Неверный или просроченный код привязки");
 
         var existing = await _db.Users.FirstOrDefaultAsync(u => u.TelegramChatId == chatId);
         if (existing != null)
@@ -179,6 +190,7 @@ public class UserService
         user.TelegramLinkCodeExpiry = null;
 
         await _db.SaveChangesAsync();
+        await transaction.CommitAsync();
         return user;
     }
 
@@ -211,6 +223,14 @@ public class UserService
     {
         botUsername = botUsername.TrimStart('@');
         return $"https://t.me/{botUsername}?start=LINK_{code}";
+    }
+
+    // Code generation and linking share one lock, so an active code belongs to one account
+    // and a Telegram chat is linked to at most one account.
+    private async Task LockTelegramLinksAsync()
+    {
+        if (_db.Database.IsNpgsql())
+            await _db.Database.ExecuteSqlRawAsync("SELECT pg_advisory_xact_lock(7, 0)");
     }
 
     private static string HashPassword(string password)

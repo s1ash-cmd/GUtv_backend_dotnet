@@ -6,7 +6,7 @@ using Telegram.Bot.Types.ReplyMarkups;
 
 namespace GUtv_backend_dotnet.Services.Telegram.Commands;
 
-public class StartCommand(UserService userService, ILogger<StartCommand> logger) : ICommand
+public class StartCommand(UserService userService, RequestRateLimiter rateLimiter, ILogger<StartCommand> logger) : ICommand
 {
     public string Name => "/start";
 
@@ -60,7 +60,8 @@ public class StartCommand(UserService userService, ILogger<StartCommand> logger)
 
         try
         {
-            var user = await userService.LinkTelegramByCode(code, chatId, username);
+            var user = await rateLimiter.LimitFailuresAsync(RateLimitPolicy.TelegramLinkFailuresPerChat,
+                chatId.ToString(), () => userService.LinkTelegramByCode(code, chatId, username));
             await botClient.SendMessage(
                 chatId: chatId,
                 text: "✅ <b>Telegram успешно привязан</b>\n\n" +

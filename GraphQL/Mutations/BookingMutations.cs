@@ -117,57 +117,6 @@ public class BookingMutations
                 : adminComment);
     }
 
-    public async Task<Booking> ApproveBookingByTelegram(
-        string botToken,
-        long chatId,
-        int bookingId,
-        int expectedRevision,
-        string? adminComment,
-        BotSecurityService botSecurityService,
-        UserService userService,
-        BookingService bookingService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-
-        var admin = await userService.GetByTelegramChatIdAsync(chatId)
-            ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
-
-        if (admin.Banned || admin.Role != UserRole.Admin)
-            throw new GraphQLException("У вас нет прав для этого действия");
-
-        return await bookingService.ApproveBookingAsync(
-            bookingId,
-            expectedRevision,
-            admin.Id,
-            BookingAdminCommentFormatter.Format(admin, adminComment));
-    }
-
-    public async Task<Booking> RejectBookingByTelegram(
-        string botToken,
-        long chatId,
-        int bookingId,
-        int expectedRevision,
-        string? adminComment,
-        BotSecurityService botSecurityService,
-        UserService userService,
-        BookingService bookingService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-
-        var admin = await userService.GetByTelegramChatIdAsync(chatId)
-            ?? throw new GraphQLException("Пользователь не найден. Используйте /link для привязки аккаунта.");
-
-        if (admin.Banned || admin.Role != UserRole.Admin)
-            throw new GraphQLException("У вас нет прав для этого действия");
-
-        return await bookingService.CancelBookingAsync(
-            bookingId,
-            admin.Id,
-            true,
-            expectedRevision,
-            BookingAdminCommentFormatter.Format(admin, adminComment));
-    }
-
     private static async Task<User> GetCurrentUserAsync(
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,

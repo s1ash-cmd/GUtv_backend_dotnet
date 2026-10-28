@@ -47,18 +47,4 @@ public class UserQueries
         return await db.Users.FirstOrDefaultAsync(u => u.Id == id)
             ?? throw new GraphQLException("Пользователь не найден");
     }
-
-    public async Task<User?> GetUserByTelegramChatId(
-        string botToken,
-        long chatId,
-        BotSecurityService botSecurityService,
-        UserService userService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-
-        if (chatId <= 0)
-            throw new GraphQLException("Некорректный chatId");
-
-        return await userService.GetByTelegramChatIdAsync(chatId);
-    }
 }

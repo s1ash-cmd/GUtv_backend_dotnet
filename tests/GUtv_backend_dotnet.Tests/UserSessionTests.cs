@@ -101,13 +101,14 @@ public class UserSessionTests
         await test.Db.SaveChangesAsync();
         await users.SetBanned(user.Id, true, "Нарушение правил");
         var mutation = new GUtv_backend_dotnet.GraphQL.Mutations.UserMutation();
+        using var rateLimiter = new RequestRateLimiter();
         var payload = await mutation.Login(new("first", "test-password"), users, test.Service,
-            new HttpContextAccessor { HttpContext = new DefaultHttpContext() });
+            new HttpContextAccessor { HttpContext = new DefaultHttpContext() }, rateLimiter);
         Assert.True(payload.User.Banned);
         Assert.Equal("Нарушение правил", payload.User.BanReason);
         Assert.NotEmpty(payload.AccessToken);
         await Assert.ThrowsAsync<GraphQLException>(() => mutation.Login(new("first", "wrong"),
-            users, test.Service, new HttpContextAccessor()));
+            users, test.Service, new HttpContextAccessor(), rateLimiter));
     }
 
     [Theory]

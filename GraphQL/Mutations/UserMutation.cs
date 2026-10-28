@@ -12,8 +12,11 @@ public class UserMutation
         RegisterInput input,
         UserService userService,
         UserSessionService sessionService,
-        IHttpContextAccessor httpContextAccessor)
+        IHttpContextAccessor httpContextAccessor,
+        RequestRateLimiter rateLimiter)
     {
+        rateLimiter.Acquire(RateLimitPolicy.RegistrationPerClient,
+            RequestRateLimiter.ClientKey(httpContextAccessor.HttpContext));
         var role = UserRole.User;
 
         var user = await userService.CreateUser(
@@ -31,12 +34,19 @@ public class UserMutation
         LoginInput input,
         UserService userService,
         UserSessionService sessionService,
-        IHttpContextAccessor httpContextAccessor)
+        IHttpContextAccessor httpContextAccessor,
+        RequestRateLimiter rateLimiter)
     {
-        var user = await userService.GetByLoginAsync(input.Login);
-
-        if (user == null || !userService.VerifyPassword(input.Password, user.PasswordHash))
-            throw new GraphQLException("Неверный логин или пароль");
+        var client = RequestRateLimiter.ClientKey(httpContextAccessor.HttpContext);
+        var account = RequestRateLimiter.AccountKey(input.Login);
+        var user = await rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerClient, client, () =>
+            rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerAccount, account, async () =>
+            {
+                var candidate = await userService.GetByLoginAsync(input.Login);
+                if (candidate == null || !userService.VerifyPassword(input.Password, candidate.PasswordHash))
+                    throw new GraphQLException("Неверный логин или пароль");
+                return candidate;
+            }));
 
         var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
         return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
@@ -44,8 +54,12 @@ public class UserMutation
 
     public async Task<AuthPayload> RefreshToken(
         string refreshToken,
-        UserSessionService sessionService)
+        UserSessionService sessionService,
+        IHttpContextAccessor httpContextAccessor,
+        RequestRateLimiter rateLimiter)
     {
+        rateLimiter.Acquire(RateLimitPolicy.RefreshPerClient,
+            RequestRateLimiter.ClientKey(httpContextAccessor.HttpContext));
         var session = await sessionService.RotateAsync(refreshToken);
         return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
     }
@@ -133,9 +147,11 @@ public class UserMutation
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
         UserAvatarService avatarService,
+        RequestRateLimiter rateLimiter,
         CancellationToken cancellationToken)
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
+        rateLimiter.Acquire(RateLimitPolicy.AvatarUploadPerUser, userId.ToString());
         return avatarService.UploadAsync(userId, imageBase64, cancellationToken);
     }
 
@@ -158,30 +174,6 @@ public class UserMutation
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
         return await userService.RegenerateAvatarSeedAsync(userId);
-    }
-
-    public Task<User> LinkTelegramByCode(
-        string botToken,
-        string code,
-        long chatId,
-        string? username,
-        BotSecurityService botSecurityService,
-        UserService userService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-        return userService.LinkTelegramByCode(code, chatId, username);
-    }
-
-    public async Task<bool> UpdateTelegramUsername(
-        string botToken,
-        long chatId,
-        string? username,
-        BotSecurityService botSecurityService,
-        UserService userService)
-    {
-        botSecurityService.EnsureAuthorized(botToken);
-        await userService.UpdateTelegramUsernameAsync(chatId, username);
-        return true;
     }
 }
 

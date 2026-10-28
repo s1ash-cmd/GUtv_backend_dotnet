@@ -81,12 +81,12 @@ public class PostgresSessionTests : IAsyncLifetime
         });
         host.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
         host.Services.AddScoped<UserService>();
+        host.Services.AddSingleton<RequestRateLimiter>();
         host.Services.AddSingleton<AvatarImageStore>();
         host.Services.AddScoped<UserAvatarService>();
         host.Services.AddScoped<UserSessionService>();
         host.Services.AddScoped<AuthService>();
         host.Services.AddScoped<EquipmentService>();
-        host.Services.AddScoped<BotSecurityService>();
         host.Services.AddHttpContextAccessor();
         host.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
         {

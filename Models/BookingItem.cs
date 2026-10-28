@@ -5,6 +5,7 @@ public class BookingItem
     public int Id { get; set; }
 
     public int BookingId { get; set; }
+    [GraphQLIgnore]
     public Booking Booking { get; set; } = null!;
 
     public int EqItemId { get; set; }

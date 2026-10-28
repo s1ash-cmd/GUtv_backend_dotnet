@@ -5,7 +5,7 @@ using Telegram.Bot.Types.Enums;
 
 namespace GUtv_backend_dotnet.Services.Telegram.Commands;
 
-public class LinkCommand(UserService userService, ILogger<LinkCommand> logger) : ICommand
+public class LinkCommand(UserService userService, RequestRateLimiter rateLimiter, ILogger<LinkCommand> logger) : ICommand
 {
     public string Name => "/link";
 
@@ -38,7 +38,8 @@ public class LinkCommand(UserService userService, ILogger<LinkCommand> logger) :
 
         try
         {
-            var user = await userService.LinkTelegramByCode(code, chatId, username);
+            var user = await rateLimiter.LimitFailuresAsync(RateLimitPolicy.TelegramLinkFailuresPerChat,
+                chatId.ToString(), () => userService.LinkTelegramByCode(code, chatId, username));
             logger.LogInformation("Telegram @{Username} ({ChatId}) linked to {Login}", username, chatId, user.Login);
 
             await botClient.SendMessage(
