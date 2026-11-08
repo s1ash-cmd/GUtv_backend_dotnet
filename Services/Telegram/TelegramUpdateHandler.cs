@@ -286,8 +286,7 @@ public class TelegramUpdateHandler
             if (admin is null || admin.Banned || admin.Role != UserRole.Admin)
                 throw new GraphQLException("У вас нет прав для этого действия");
 
-            var comment = message.Text == "-" ? null : message.Text;
-            var adminComment = BookingAdminCommentFormatter.Format(admin, comment);
+            var adminComment = BookingAdminCommentFormatter.Format(admin, message.Text);
 
             if (pendingData.Action == "approve")
             {
