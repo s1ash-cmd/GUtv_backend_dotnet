@@ -110,7 +110,7 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
         var models = await db.EqModels
             .AsNoTracking()
             .Include(m => m.Photos.OrderBy(p => p.Order))
-            .Include(m => m.EqItems.OrderBy(i => i.Id))
+            .Include(m => m.EqItems.Where(i => i.ArchivedAt == null).OrderBy(i => i.Id))
             .ToListAsync();
 
         return models
@@ -261,6 +261,7 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
         return await db.EqItems
             .AsNoTracking()
             .Include(i => i.EqModel)
+            .Where(i => i.ArchivedAt == null)
             .ToListAsync();
     }
 
@@ -285,7 +286,7 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
         var items = await db.EqItems
             .AsNoTracking()
             .Include(i => i.EqModel)
-            .Where(i => i.EqModelId == eqModelId)
+            .Where(i => i.EqModelId == eqModelId && i.ArchivedAt == null)
             .ToListAsync();
 
         return items;
@@ -313,7 +314,7 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
     {
         var item = await db.EqItems
             .Include(i => i.EqModel)
-            .FirstOrDefaultAsync(i => i.Id == id)
+            .FirstOrDefaultAsync(i => i.Id == id && i.ArchivedAt == null)
             ?? throw new GraphQLException($"Экземпляр оборудования с ID {id} не найден");
 
         item.Operable = !item.Operable;
@@ -321,43 +322,57 @@ public class EquipmentService(AppDbContext db, EquipmentImageStore? images = nul
         return item;
     }
 
+    // Any unit can be removed. A unit that was never booked is deleted; one with booking
+    // history is archived instead, so past bookings keep their inventory number.
     public async Task<bool> DeleteItemAsync(int id)
     {
-        await using var transaction = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted);
-
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync() : null;
         try
         {
             var item = await db.EqItems
-                .Include(i => i.EqModel)
-                .FirstOrDefaultAsync(i => i.Id == id)
+                .FirstOrDefaultAsync(i => i.Id == id && i.ArchivedAt == null)
                 ?? throw new GraphQLException($"Экземпляр оборудования с ID {id} не найден");
 
-            await db.Database.ExecuteSqlRawAsync(
-                "SELECT 1 FROM \"EqModels\" WHERE \"Id\" = {0} FOR UPDATE",
-                item.EqModelId);
+            // Booking allocation takes the same per-model lock, so a booking cannot claim
+            // this unit between the checks below and its removal.
+            if (db.Database.IsNpgsql())
+                await db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT pg_advisory_xact_lock(1, {item.EqModelId})");
 
-            var modelItems = await db.EqItems
-                .Where(i => i.EqModelId == item.EqModelId)
-                .Select(i => new { i.Id, i.InventoryNumber })
-                .ToListAsync();
-
-            var lastItem = modelItems
-                .OrderByDescending(i => GetInventorySequence(i.InventoryNumber))
-                .ThenByDescending(i => i.Id)
-                .FirstOrDefault();
-
-            if (lastItem?.Id != item.Id)
+            var activeBookingId = await db.BookingItems
+                .Where(bi => bi.EqItemId == id &&
+                             (bi.Booking.Status == BookingStatus.Pending ||
+                              bi.Booking.Status == BookingStatus.Approved))
+                .OrderBy(bi => bi.BookingId)
+                .Select(bi => (int?)bi.BookingId)
+                .FirstOrDefaultAsync();
+            if (activeBookingId.HasValue)
                 throw new GraphQLException(
-                    $"Удалять можно только последний экземпляр модели. Сейчас последний: {lastItem?.InventoryNumber ?? "не найден"}");
+                    $"Экземпляр {item.InventoryNumber} занят в активном бронировании #{activeBookingId}. " +
+                    "Сначала отмените или завершите это бронирование.");
 
-            db.EqItems.Remove(item);
+            // Carts store plain IDs, so nothing else removes the unit from them.
+            var cartItems = await db.CartItems.Where(ci => ci.EqModelId == item.EqModelId).ToListAsync();
+            foreach (var cartItem in cartItems.Where(ci => ci.SelectedItemIds.Contains(id)))
+            {
+                cartItem.SelectedItemIds = cartItem.SelectedItemIds.Where(selected => selected != id).ToArray();
+                cartItem.Quantity = cartItem.SelectedItemIds.Length;
+            }
+
+            if (await db.BookingItems.AnyAsync(bi => bi.EqItemId == id))
+                item.ArchivedAt = DateTime.UtcNow;
+            else
+                db.EqItems.Remove(item);
+
             await db.SaveChangesAsync();
-            await transaction.CommitAsync();
+            if (transaction is not null) await transaction.CommitAsync();
             return true;
         }
         catch
         {
-            await transaction.RollbackAsync();
+            if (transaction is not null) await transaction.RollbackAsync();
+            db.ChangeTracker.Clear();
             throw;
         }
     }

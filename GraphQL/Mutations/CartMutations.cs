@@ -22,14 +22,15 @@ public class CartMutations
     [Authorize]
     public Task<Cart> AddCartItem(
         int eqModelId,
-        int quantity,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
         CartService cartService,
-        int? selectedItemId = null)
+        int? selectedItemId = null,
+        [GraphQLDeprecated("Количество равно числу выбранных инвентарных номеров; аргумент игнорируется.")]
+        int? quantity = null)
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
-        return cartService.AddCartItemAsync(userId, eqModelId, quantity, selectedItemId);
+        return cartService.AddCartItemAsync(userId, eqModelId, selectedItemId);
     }
 
     [Authorize]
@@ -82,10 +83,11 @@ public class CartMutations
         int bookingId,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
-        CartService cartService)
+        CartService cartService,
+        bool replaceCart = false)
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
-        return cartService.AddBookingItemsToCartAsync(userId, bookingId);
+        return cartService.AddBookingItemsToCartAsync(userId, bookingId, replaceCart);
     }
 
     [Authorize]
@@ -93,11 +95,12 @@ public class CartMutations
         int bookingId,
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
-        CartService cartService)
+        CartService cartService,
+        bool replaceCart = false)
     {
         var httpUser = httpContextAccessor.HttpContext?.User;
         var userId = equipmentService.GetRequiredUserId(httpUser);
         var isAdmin = httpUser?.IsInRole("Admin") ?? false;
-        return cartService.PrepareBookingEditAsync(userId, bookingId, isAdmin);
+        return cartService.PrepareBookingEditAsync(userId, bookingId, isAdmin, replaceCart);
     }
 }

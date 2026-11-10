@@ -35,7 +35,7 @@ public class UserSessionService(AppDbContext db, UserService userService, AuthSe
             db.UserSessions.Add(session);
             await db.SaveChangesAsync();
             await transaction.CommitAsync();
-            return new RefreshedSession(user, accessToken, token);
+            return new RefreshedSession(user, accessToken, token, session.ExpiresAt);
         }
         catch
         {
@@ -58,18 +58,19 @@ public class UserSessionService(AppDbContext db, UserService userService, AuthSe
             // This also serializes role upgrades with administrative role changes.
             var user = await LockUserAsync(session.UserId);
             var now = DateTime.UtcNow;
+            var expiresAt = now.AddDays(7);
             var token = authService.GenerateRefreshToken();
             var updated = await db.UserSessions
                 .Where(s => s.Id == session.Id && s.RefreshTokenHash == hash && s.RevokedAt == null && s.ExpiresAt > now)
                 .ExecuteUpdateAsync(setters => setters
                     .SetProperty(s => s.RefreshTokenHash, HashRefreshToken(token))
                     .SetProperty(s => s.LastUsedAt, now)
-                    .SetProperty(s => s.ExpiresAt, now.AddDays(7)));
+                    .SetProperty(s => s.ExpiresAt, expiresAt));
             if (updated != 1) throw new GraphQLException("Недействительный refresh token");
             user = await userService.EnsureRoleUpgradeOnAuthorizationAsync(user);
             var accessToken = authService.GenerateAccessToken(user, session.Id);
             await transaction.CommitAsync();
-            return new RefreshedSession(user, accessToken, token);
+            return new RefreshedSession(user, accessToken, token, expiresAt);
         }
         catch
         {
@@ -129,4 +130,4 @@ public class UserSessionService(AppDbContext db, UserService userService, AuthSe
 public record UserSessionPayload(Guid Id, DateTime CreatedAt, DateTime LastUsedAt,
     DateTime ExpiresAt, string? UserAgent, bool IsCurrent);
 
-public record RefreshedSession(User User, string AccessToken, string RefreshToken);
+public record RefreshedSession(User User, string AccessToken, string RefreshToken, DateTime ExpiresAt);

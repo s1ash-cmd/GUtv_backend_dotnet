@@ -21,7 +21,11 @@ public class BookingQueries
         return bookingService.GetBookingByIdAsync(id, userId, isAdmin);
     }
 
+    private const string LegacyList =
+        "Возвращает не больше 200 последних бронирований. Используйте постраничный запрос.";
+
     [Authorize(Roles = ["Admin"])]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetBookingsByUser(int userId, BookingService bookingService) =>
         bookingService.GetBookingsByUserAsync(userId);
 
@@ -30,6 +34,7 @@ public class BookingQueries
         bookingService.GetBookingsPageByUserAsync(userId, page);
 
     [Authorize(Roles = ["Admin"])]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetAllBookings(BookingService bookingService) =>
         bookingService.GetAllBookingsAsync();
 
@@ -50,6 +55,7 @@ public class BookingQueries
         bookingService.GetCalendarBookingsAsync(start, end);
 
     [Authorize]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetMyBookings(
         IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService,
@@ -74,14 +80,26 @@ public class BookingQueries
     }
 
     [Authorize(Roles = ["Admin"])]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetBookingsByEquipmentItem(int equipmentItemId, BookingService bookingService) =>
         bookingService.GetBookingsByEquipmentItemAsync(equipmentItemId);
 
     [Authorize(Roles = ["Admin"])]
+    public Task<BookingPagePayload> GetBookingsPageByEquipmentItem(
+        int equipmentItemId,
+        BookingService bookingService,
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null) =>
+        bookingService.GetBookingsPageByEquipmentItemAsync(equipmentItemId, page, search, status);
+
+    [Authorize(Roles = ["Admin"])]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetBookingsByStatus(BookingStatus status, BookingService bookingService) =>
         bookingService.GetBookingsByStatusAsync(status);
 
     [Authorize(Roles = ["Admin"])]
+    [GraphQLDeprecated(LegacyList)]
     public Task<List<Booking>> GetBookingsByInventoryNumber(string inventoryNumber, BookingService bookingService) =>
         bookingService.GetBookingsByInventoryNumberAsync(inventoryNumber);
 }

@@ -27,6 +27,7 @@ public static class GraphQLSetup
             .AddType<EqCategoryType>()
             .AddType<EqAccessType>()
             .AddType<BookingStatusType>()
+            .AddType<UserListGroupType>()
             .AddTypeExtension<UserQueries>()
             .AddTypeExtension<UserMutation>()
             .AddTypeExtension<EquipmentQueries>()

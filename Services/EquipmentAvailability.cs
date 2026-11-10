@@ -11,7 +11,7 @@ internal static class EquipmentAvailability
         DateTime start,
         DateTime end,
         int? excludedBookingId = null) =>
-        items.Where(item => item.EqModelId == modelId && item.Operable)
+        items.Where(item => item.EqModelId == modelId && item.Operable && item.ArchivedAt == null)
             .Where(item => !item.BookingItems.Any(bookingItem =>
                 (!excludedBookingId.HasValue || bookingItem.BookingId != excludedBookingId.Value) &&
                 (bookingItem.Booking.Status == BookingStatus.Pending ||

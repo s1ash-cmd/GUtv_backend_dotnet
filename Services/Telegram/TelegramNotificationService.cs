@@ -15,28 +15,24 @@ public class TelegramNotificationService(
     AppDbContext db,
     ILogger<TelegramNotificationService> logger)
 {
-    public async Task NotifyAdminsNewBooking(Booking booking)
-    {
-        await NotifyAdminsBookingSubmitted(booking, isUpdated: false);
-    }
+    public Task NotifyAdminsNewBooking(Booking booking, CancellationToken cancellationToken = default) =>
+        NotifyAdminsBookingSubmitted(booking, isUpdated: false, cancellationToken);
 
-    public async Task NotifyAdminsBookingUpdated(Booking booking)
-    {
-        await NotifyAdminsBookingSubmitted(booking, isUpdated: true);
-    }
+    public Task NotifyAdminsBookingUpdated(Booking booking, CancellationToken cancellationToken = default) =>
+        NotifyAdminsBookingSubmitted(booking, isUpdated: true, cancellationToken);
 
-    private async Task NotifyAdminsBookingSubmitted(Booking booking, bool isUpdated)
+    private async Task NotifyAdminsBookingSubmitted(Booking booking, bool isUpdated, CancellationToken cancellationToken)
     {
         try
         {
             var admins = await db.Users
                 .Where(u => u.Role == UserRole.Admin && !u.Banned && u.TelegramChatId > 0)
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             if (admins.Count == 0)
                 return;
 
-            var loadedBooking = await LoadBooking(booking.Id);
+            var loadedBooking = await LoadBooking(booking.Id, cancellationToken);
             var message = BuildBookingSubmittedMessage(loadedBooking, isUpdated);
             var keyboard = new InlineKeyboardMarkup(new[]
             {
@@ -55,7 +51,8 @@ public class TelegramNotificationService(
                         chatId: admin.TelegramChatId!.Value,
                         text: message,
                         parseMode: ParseMode.Html,
-                        replyMarkup: keyboard);
+                        replyMarkup: keyboard,
+                        cancellationToken: cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -70,17 +67,18 @@ public class TelegramNotificationService(
         }
     }
 
-    public Task NotifyUserBookingCreated(Booking booking) =>
-        NotifyUserBookingSubmitted(booking, isUpdated: false, actorUserId: null);
+    public Task NotifyUserBookingCreated(Booking booking, CancellationToken cancellationToken = default) =>
+        NotifyUserBookingSubmitted(booking, isUpdated: false, actorUserId: null, cancellationToken);
 
-    public Task NotifyUserBookingUpdated(Booking booking, int actorUserId) =>
-        NotifyUserBookingSubmitted(booking, isUpdated: true, actorUserId);
+    public Task NotifyUserBookingUpdated(Booking booking, int actorUserId, CancellationToken cancellationToken = default) =>
+        NotifyUserBookingSubmitted(booking, isUpdated: true, actorUserId, cancellationToken);
 
-    private async Task NotifyUserBookingSubmitted(Booking booking, bool isUpdated, int? actorUserId)
+    private async Task NotifyUserBookingSubmitted(
+        Booking booking, bool isUpdated, int? actorUserId, CancellationToken cancellationToken)
     {
         try
         {
-            var loadedBooking = await LoadBooking(booking.Id);
+            var loadedBooking = await LoadBooking(booking.Id, cancellationToken);
             if (loadedBooking.User.TelegramChatId is null or <= 0)
                 return;
 
@@ -88,7 +86,8 @@ public class TelegramNotificationService(
             // Plain text makes bounded summaries safe for arbitrary HTML-like user input.
             await botClient.SendMessage(
                 chatId: loadedBooking.User.TelegramChatId.Value,
-                text: BuildUserBookingSubmittedMessage(loadedBooking, isUpdated, actorUserId));
+                text: BuildUserBookingSubmittedMessage(loadedBooking, isUpdated, actorUserId),
+                cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
@@ -96,11 +95,12 @@ public class TelegramNotificationService(
         }
     }
 
-    public async Task NotifyUserBookingStatusChanged(Booking booking, BookingStatus oldStatus)
+    public async Task NotifyUserBookingStatusChanged(
+        Booking booking, BookingStatus oldStatus, CancellationToken cancellationToken = default)
     {
         try
         {
-            var loadedBooking = await LoadBooking(booking.Id);
+            var loadedBooking = await LoadBooking(booking.Id, cancellationToken);
             if (loadedBooking.User.TelegramChatId is null or <= 0)
                 return;
 
@@ -108,7 +108,8 @@ public class TelegramNotificationService(
             await botClient.SendMessage(
                 chatId: loadedBooking.User.TelegramChatId.Value,
                 text: message,
-                parseMode: ParseMode.Html);
+                parseMode: ParseMode.Html,
+                cancellationToken: cancellationToken);
         }
         catch (Exception ex)
         {
@@ -116,7 +117,57 @@ public class TelegramNotificationService(
         }
     }
 
-    private async Task<Booking> LoadBooking(int bookingId)
+    // Every administrator received the request with "approve / reject" buttons. Once the
+    // request stops waiting for a decision, the others are told who settled it, so nobody
+    // keeps working on a message that is already out of date.
+    public async Task NotifyAdminsBookingDecided(
+        Booking booking, BookingStatus oldStatus, int actorUserId, CancellationToken cancellationToken = default)
+    {
+        if (oldStatus != BookingStatus.Pending)
+            return;
+
+        try
+        {
+            var loadedBooking = await LoadBooking(booking.Id, cancellationToken);
+            if (loadedBooking.Status == BookingStatus.Pending)
+                return;
+
+            // The actor knows what they did; the owner gets the status notification instead.
+            var admins = await db.Users.AsNoTracking()
+                .Where(u => u.Role == UserRole.Admin && !u.Banned && u.TelegramChatId > 0 &&
+                            u.Id != actorUserId && u.Id != loadedBooking.UserId)
+                .ToListAsync(cancellationToken);
+            if (admins.Count == 0)
+                return;
+
+            var actor = await db.Users.AsNoTracking()
+                .SingleOrDefaultAsync(u => u.Id == actorUserId, cancellationToken);
+            var message = BuildDecidedMessage(loadedBooking, actor);
+
+            foreach (var admin in admins)
+            {
+                try
+                {
+                    await botClient.SendMessage(
+                        chatId: admin.TelegramChatId!.Value,
+                        text: message,
+                        parseMode: ParseMode.Html,
+                        cancellationToken: cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Telegram decision notification failed for admin {UserId}, booking {BookingId}",
+                        admin.Id, booking.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Telegram decision notification failed for booking {BookingId}", booking.Id);
+        }
+    }
+
+    private async Task<Booking> LoadBooking(int bookingId, CancellationToken cancellationToken = default)
     {
         return await db.Bookings
             .AsNoTracking()
@@ -124,7 +175,31 @@ public class TelegramNotificationService(
             .Include(b => b.BookingItems)
             .ThenInclude(bi => bi.EqItem)
             .ThenInclude(i => i.EqModel)
-            .FirstAsync(b => b.Id == bookingId);
+            .FirstAsync(b => b.Id == bookingId, cancellationToken);
+    }
+
+    private static string BuildDecidedMessage(Booking booking, User? actor)
+    {
+        var byOwner = actor?.Id == booking.UserId;
+        var outcome = booking.Status switch
+        {
+            BookingStatus.Approved => "одобрена",
+            BookingStatus.Cancelled when byOwner => "отменена заявителем",
+            BookingStatus.Cancelled => "отклонена",
+            _ => TelegramText.GetStatusName(booking.Status).ToLowerInvariant()
+        };
+
+        var message = new StringBuilder();
+        message.AppendLine($"{TelegramText.GetStatusEmoji(booking.Status)} {TelegramText.BookingTitle(booking.Id)}");
+        message.AppendLine($"<b>Заявка {outcome}</b> — решение больше не требуется");
+        message.AppendLine();
+        message.AppendLine($"👤 <b>Пользователь:</b> {LimitHtmlText(booking.User.Name, 120)}");
+        message.AppendLine($"📅 <b>Период:</b> {TelegramText.Period(booking.StartTime, booking.EndTime)}");
+        if (!byOwner && actor is not null)
+            message.AppendLine($"🛡 <b>Решение принял:</b> {LimitHtmlText(actor.Name, 120)}");
+        if (!string.IsNullOrWhiteSpace(booking.AdminComment))
+            message.AppendLine($"💬 <b>Комментарий:</b> {LimitHtmlText(booking.AdminComment, 600)}");
+        return message.ToString();
     }
 
     private static string BuildBookingSubmittedMessage(Booking booking, bool isUpdated)
@@ -184,7 +259,7 @@ public class TelegramNotificationService(
             message.AppendLine($"… и ещё {booking.BookingItems.Count - visibleCount} экземпляров.");
     }
 
-    private static string LimitHtmlText(string? value, int maxLength)
+    internal static string LimitHtmlText(string? value, int maxLength)
     {
         var text = string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
         var escaped = TelegramText.Escape(text);

@@ -4,6 +4,8 @@ using GUtv_backend_dotnet.Data;
 using GUtv_backend_dotnet.GraphQL;
 using GUtv_backend_dotnet.Services;
 using GUtv_backend_dotnet.Services.Telegram;
+using HotChocolate;
+using HotChocolate.Authorization;
 using HotChocolate.Execution;
 using HotChocolate.Types;
 using Microsoft.AspNetCore.Builder;
@@ -96,6 +98,83 @@ public class GraphqlSecurityTests
         var deep = Assert.IsAssignableFrom<IOperationResult>(await executor.ExecuteAsync(
             "{ allEquipmentModels { eqItems { eqModel { eqItems { eqModel { eqItems { eqModel { eqItems { eqModel { eqItems { id } } } } } } } } } } }"));
         Assert.Contains(deep.Errors ?? [], error => error.Message.Contains("depth"));
+    }
+
+    [Fact]
+    public async Task ContractOfTheChangedOperationsStaysCompatibleWithDeployedPages()
+    {
+        var schema = (await CreateExecutorAsync(Environments.Production)).Schema;
+        static string Format(IType type) => type switch
+        {
+            NonNullType nonNull => Format(nonNull.Type) + "!",
+            ListType list => $"[{Format(list.ElementType)}]",
+            INamedType named => named.Name,
+            _ => throw new ArgumentException("Unknown GraphQL type", nameof(type))
+        };
+
+        // A page loaded before the cookie existed still sends its token; the new one sends nothing.
+        var refresh = schema.MutationType!.Fields["refreshToken"];
+        Assert.Equal("String", Format(refresh.Arguments["refreshToken"].Type));
+        var auth = Assert.IsAssignableFrom<ObjectType>(refresh.Type.NamedType());
+        Assert.Equal("String", Format(auth.Fields["refreshToken"].Type));
+        Assert.Equal("String!", Format(auth.Fields["accessToken"].Type));
+
+        // Every cart detail may be omitted (kept) or null (cleared).
+        var details = Assert.IsAssignableFrom<InputObjectType>(
+            schema.MutationType.Fields["setCartDetails"].Arguments["input"].Type.NamedType());
+        Assert.Equal(new[] { "comment:String", "endTime:DateTime", "reason:String", "startTime:DateTime" },
+            details.Fields.Select(field => $"{field.Name}:{Format(field.Type)}").Order());
+
+        // The old page still passes a quantity; it is accepted and ignored.
+        var add = schema.MutationType.Fields["addCartItem"];
+        Assert.Equal("Int!", Format(add.Arguments["eqModelId"].Type));
+        Assert.Equal("Int", Format(add.Arguments["selectedItemId"].Type));
+        Assert.Equal("Int", Format(add.Arguments["quantity"].Type));
+        Assert.True(add.Arguments["quantity"].IsDeprecated);
+
+        var users = schema.QueryType.Fields["usersPage"];
+        Assert.Equal(new[] { "Admin" },
+            Assert.Single(users.Directives, d => d.Type.Name == "authorize").AsValue<AuthorizeDirective>().Roles);
+        Assert.Equal("UserListGroup!", Format(users.Arguments["group"].Type));
+        Assert.Equal("All", users.Arguments["group"].DefaultValue!.ToString());
+        Assert.Equal(new[] { "Admins", "All", "Banned", "Osnova", "Users" },
+            Assert.IsAssignableFrom<EnumType>(users.Arguments["group"].Type.NamedType()).Values.Select(v => v.Name).Order());
+        Assert.True(schema.QueryType.Fields["users"].IsDeprecated);
+        // The archive marker is internal: the catalogue simply stops listing such units.
+        Assert.DoesNotContain(schema.GetType<ObjectType>("EqItem").Fields, field => field.Name == "archivedAt");
+    }
+
+    [Fact]
+    public async Task CartDetailsInputTellsAnOmittedFieldFromAnExplicitNull()
+    {
+        var executor = await new ServiceCollection().AddGraphQLServer()
+            .AddQueryType<CartDetailsProbe>().BuildRequestExecutorAsync();
+
+        async Task<string> Probe(string input)
+        {
+            var result = await executor.ExecuteAsync($"{{ probe(input: {input}) }}");
+            return System.Text.Json.JsonDocument.Parse(result.ToJson())
+                .RootElement.GetProperty("data").GetProperty("probe").GetString()!;
+        }
+
+        Assert.Equal("reason=<kept> start=<kept> end=<kept> comment=<kept>", await Probe("{}"));
+        Assert.Equal("reason=<null> start=<kept> end=<kept> comment=x",
+            await Probe("{ reason: null, comment: \"x\" }"));
+        Assert.Equal("reason=r start=2030-01-10T10:00:00Z end=<null> comment=<kept>",
+            await Probe("{ reason: \"r\", startTime: \"2030-01-10T10:00:00Z\", endTime: null }"));
+    }
+
+    public class CartDetailsProbe
+    {
+        public string Probe(UpdateCartDetailsInput input)
+        {
+            static string Show<T>(Optional<T> value, Func<T, string> format) =>
+                !value.HasValue ? "<kept>" : value.Value is null ? "<null>" : format(value.Value);
+            return $"reason={Show(input.Reason, v => v!)} " +
+                   $"start={Show(input.StartTime, v => v!.Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))} " +
+                   $"end={Show(input.EndTime, v => v!.Value.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"))} " +
+                   $"comment={Show(input.Comment, v => v!)}";
+        }
     }
 
     [Theory]

@@ -42,74 +42,87 @@ public class BookingFilterCommand(
             displayName);
     }
 
+    // Telegram rejects messages above 4096 characters; the rest is room for the footer.
+    private const int MessageBudget = 3800;
+    private const int VisibleEquipment = 5;
+
     public async Task ExecuteAsync(ITelegramBotClient botClient, Message message, CancellationToken cancellationToken)
     {
         var user = await userService.GetByTelegramChatIdAsync(message.Chat.Id);
         if (user is null)
             return;
 
-        List<Booking> bookings;
-        try
-        {
-            bookings = await bookingService.GetBookingsByUserAsync(user.Id);
-        }
-        catch (GraphQLException)
+        // The newest page is enough for a chat message; the site has the full history.
+        var page = await bookingService.GetBookingsPageByUserAsync(user.Id, status: status);
+        if (page.TotalCount == 0)
         {
             await botClient.SendMessage(
                 chatId: message.Chat.Id,
-                text: "📭 У вас пока нет бронирований",
-                cancellationToken: cancellationToken);
-            return;
-        }
-
-        if (status is not null)
-            bookings = bookings.Where(b => b.Status == status).ToList();
-
-        if (bookings.Count == 0)
-        {
-            await botClient.SendMessage(
-                chatId: message.Chat.Id,
-                text: $"📭 Нет бронирований в категории <b>{TelegramText.Escape(Name)}</b>",
+                text: status is null
+                    ? "📭 У вас пока нет бронирований"
+                    : $"📭 Нет бронирований в категории <b>{TelegramText.Escape(Name)}</b>",
                 parseMode: ParseMode.Html,
                 cancellationToken: cancellationToken);
             return;
         }
 
-        var response = new StringBuilder();
-        response.AppendLine($"📆 <b>{TelegramText.Escape(Name)}</b>");
-        response.AppendLine();
-
-        foreach (var booking in bookings.OrderByDescending(b => b.StartTime))
-        {
-            response.AppendLine($"{TelegramText.GetStatusEmoji(booking.Status)} {TelegramText.BookingTitle(booking.Id)}");
-            response.AppendLine($"<b>Статус:</b> {TelegramText.GetStatusName(booking.Status)}");
-            response.AppendLine($"<b>Период:</b> {TelegramText.Period(booking.StartTime, booking.EndTime)}");
-            response.AppendLine($"<b>Причина:</b> {TelegramText.Escape(booking.Reason)}");
-
-            if (booking.BookingItems.Count > 0)
-            {
-                response.AppendLine("<b>Оборудование:</b>");
-                foreach (var item in booking.BookingItems)
-                    response.AppendLine($"• {TelegramText.Escape(item.EqItem.EqModel.Name)} ({TelegramText.Escape(item.EqItem.InventoryNumber)})");
-            }
-
-            if (!string.IsNullOrWhiteSpace(booking.Comment))
-                response.AppendLine($"<b>Комментарий:</b> {TelegramText.Escape(booking.Comment)}");
-
-            if (!string.IsNullOrWhiteSpace(booking.AdminComment))
-                response.AppendLine($"<b>Админ:</b> {TelegramText.Escape(booking.AdminComment)}");
-
-            response.AppendLine();
-        }
-
-        var text = response.ToString();
-        if (text.Length > 4000)
-            text = text[..4000] + "\n\n… показаны первые бронирования";
-
         await botClient.SendMessage(
             chatId: message.Chat.Id,
-            text: text,
+            text: BuildMessage(Name, page.Items, page.TotalCount),
             parseMode: ParseMode.Html,
             cancellationToken: cancellationToken);
+    }
+
+    // Bookings are added whole: cutting the finished text could split an HTML tag or entity,
+    // and Telegram refuses such a message.
+    public static string BuildMessage(string title, IReadOnlyList<Booking> bookings, int totalCount)
+    {
+        var response = new StringBuilder();
+        response.AppendLine($"📆 <b>{TelegramText.Escape(title)}</b>");
+        response.AppendLine();
+
+        var shown = 0;
+        foreach (var booking in bookings)
+        {
+            var entry = BuildEntry(booking);
+            if (shown > 0 && response.Length + entry.Length > MessageBudget)
+                break;
+            response.Append(entry);
+            shown++;
+        }
+
+        if (shown < totalCount)
+            response.AppendLine($"… показаны последние {shown} из {totalCount}. Остальные — на сайте.");
+
+        return response.ToString();
+    }
+
+    private static string BuildEntry(Booking booking)
+    {
+        var entry = new StringBuilder();
+        entry.AppendLine($"{TelegramText.GetStatusEmoji(booking.Status)} {TelegramText.BookingTitle(booking.Id)}");
+        entry.AppendLine($"<b>Статус:</b> {TelegramText.GetStatusName(booking.Status)}");
+        entry.AppendLine($"<b>Период:</b> {TelegramText.Period(booking.StartTime, booking.EndTime)}");
+        entry.AppendLine($"<b>Причина:</b> {TelegramNotificationService.LimitHtmlText(booking.Reason, 300)}");
+
+        if (booking.BookingItems.Count > 0)
+        {
+            entry.AppendLine("<b>Оборудование:</b>");
+            foreach (var item in booking.BookingItems.OrderBy(item => item.Id).Take(VisibleEquipment))
+                entry.AppendLine(
+                    $"• {TelegramNotificationService.LimitHtmlText(item.EqItem.EqModel.Name, 64)} " +
+                    $"({TelegramNotificationService.LimitHtmlText(item.EqItem.InventoryNumber, 32)})");
+            if (booking.BookingItems.Count > VisibleEquipment)
+                entry.AppendLine($"… и ещё {booking.BookingItems.Count - VisibleEquipment}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(booking.Comment))
+            entry.AppendLine($"<b>Комментарий:</b> {TelegramNotificationService.LimitHtmlText(booking.Comment, 200)}");
+
+        if (!string.IsNullOrWhiteSpace(booking.AdminComment))
+            entry.AppendLine($"<b>Админ:</b> {TelegramNotificationService.LimitHtmlText(booking.AdminComment, 200)}");
+
+        entry.AppendLine();
+        return entry.ToString();
     }
 }

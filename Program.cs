@@ -52,16 +52,18 @@ var allowedOrigins = builder.Configuration
 builder.Services.AddCors(options =>
     options.AddPolicy("ConfiguredOrigins", policy =>
     {
+        // Credentials are allowed because the refresh token travels in an HttpOnly cookie.
+        // Browsers refuse credentials together with a wildcard origin, hence the echo below.
         if (builder.Environment.IsDevelopment() && allowedOrigins.Length == 0)
         {
-            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+            policy.SetIsOriginAllowed(_ => true).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
             return;
         }
 
         if (allowedOrigins.Length == 0)
             throw new InvalidOperationException("Cors:AllowedOrigins must be configured outside Development");
 
-        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod();
+        policy.WithOrigins(allowedOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
     }));
 
 builder.Services.AddScoped<UserService>();
@@ -86,6 +88,9 @@ builder.Services.AddSingleton<ITelegramBotClient>(new TelegramBotClient(botToken
 builder.Services.AddSingleton<TelegramUpdateHandler>();
 builder.Services.AddSingleton<AnnouncementBotHandler>();
 builder.Services.AddScoped<TelegramNotificationService>();
+// Booking requests enqueue their notifications here instead of waiting for Telegram.
+builder.Services.AddSingleton<BookingNotificationQueue>();
+builder.Services.AddHostedService(services => services.GetRequiredService<BookingNotificationQueue>());
 if (builder.Configuration.GetValue("BotConfiguration:Enabled", true))
 {
     builder.Services.AddHostedService<TelegramBotService>();

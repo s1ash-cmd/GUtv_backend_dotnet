@@ -51,7 +51,8 @@ public class TelegramUpdateHandler
         var username = message.From?.Username;
         var messageText = message.Text;
 
-        _logger.LogInformation("Telegram message from @{Username} ({ChatId}): {Message}", username ?? "unknown", chatId, messageText ?? update.Message.Type.ToString());
+        // Message text is private (comments, announcement drafts, link codes), so only its kind is logged.
+        _logger.LogInformation("Telegram {Kind} from chat {ChatId}", DescribeForLog(message), chatId);
         await UpdateUsername(chatId, username);
 
         var announcements = _serviceProvider.GetRequiredService<AnnouncementBotHandler>();
@@ -108,6 +109,19 @@ public class TelegramUpdateHandler
         }
 
         await SendUnknownCommandResponse(botClient, chatId, cancellationToken);
+    }
+
+    private static string DescribeForLog(Message message)
+    {
+        var text = message.Text;
+        if (text is null) return message.Type.ToString();
+        if (!text.StartsWith('/')) return "text";
+
+        // The command name only: arguments such as a link code stay out of the log.
+        var command = text.Split([' ', '\n', '@'], 2)[0];
+        return command.Length <= 32 && command.Skip(1).All(c => char.IsAsciiLetterOrDigit(c) || c == '_')
+            ? command
+            : "command";
     }
 
     private Dictionary<string, Type> RegisterCommands()

@@ -112,7 +112,8 @@ public class PostgresSessionTests : IAsyncLifetime
         app.MapGraphQL();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
-        client = new HttpClient { BaseAddress = new Uri(address) };
+        // Cookies are passed by hand, so every request shows exactly which token it carries.
+        client = new HttpClient(new HttpClientHandler { UseCookies = false }) { BaseAddress = new Uri(address) };
     }
 
     [PostgresFact]
@@ -268,10 +269,10 @@ public class PostgresSessionTests : IAsyncLifetime
     [PostgresFact]
     public async Task RegistrationCreatesUsableSessionAndWrongPasswordCreatesNone()
     {
-        var registration = await QueryAsync("mutation($input: RegisterInput!) { register(input: $input) { accessToken refreshToken user { login } } }",
-            variables: new { input = new { login = "registered", password = Password, name = "Registered" } });
-        var tokens = ReadTokens(registration.GetProperty("register"));
-        Assert.Equal("registered", registration.GetProperty("register").GetProperty("user").GetProperty("login").GetString());
+        var (tokens, registration) = await SignInAsync(
+            "mutation($input: RegisterInput!) { register(input: $input) { accessToken refreshToken user { login } } }",
+            new { input = new { login = "registered", password = Password, name = "Registered" } }, "register");
+        Assert.Equal("registered", registration.GetProperty("user").GetProperty("login").GetString());
         await QueryAsync("{ me { login } }", tokens.AccessToken);
         await RefreshAsync(tokens.RefreshToken);
         var badLogin = await SendAsync("mutation($input: LoginInput!) { login(input: $input) { accessToken } }",
@@ -361,11 +362,114 @@ public class PostgresSessionTests : IAsyncLifetime
             Microsoft.Extensions.Logging.Abstractions.NullLogger<TelegramNotificationService>.Instance));
     }
 
+    [PostgresFact]
+    public async Task RefreshTokenTravelsOnlyInTheHttpOnlyCookie()
+    {
+        var first = await LoginAsync("first");
+
+        // The cookie alone rotates the session; the response body carries no refresh token.
+        using var refreshed = await SendAsync("mutation { refreshToken { accessToken refreshToken } }", cookie: first.RefreshToken);
+        var body = (await refreshed.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("data").GetProperty("refreshToken");
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("refreshToken").ValueKind);
+        var accessToken = body.GetProperty("accessToken").GetString()!;
+        var rotated = ReadRefreshCookie(refreshed);
+        Assert.NotEqual(first.RefreshToken, rotated);
+        await QueryAsync("{ me { login } }", accessToken);
+
+        // The replaced cookie is refused, and that refusal does not touch the browser's cookie.
+        using var stale = await SendAsync("mutation { refreshToken { accessToken } }", cookie: first.RefreshToken);
+        Assert.True((await stale.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("errors", out _));
+        Assert.False(stale.Headers.Contains("Set-Cookie"));
+
+        // No cookie and no argument: nothing to refresh.
+        using var missing = await SendAsync("mutation { refreshToken { accessToken } }");
+        Assert.True((await missing.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("errors", out _));
+
+        // Signing out revokes the session and removes the cookie.
+        using var logout = await SendAsync("mutation { logout }", accessToken);
+        Assert.True((await logout.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("data").GetProperty("logout").GetBoolean());
+        var removal = Assert.Single(logout.Headers.GetValues("Set-Cookie"));
+        Assert.StartsWith(RefreshTokenCookie.Name + "=;", removal);
+        using var afterLogout = await SendAsync("mutation { refreshToken { accessToken } }", cookie: rotated);
+        Assert.True((await afterLogout.Content.ReadFromJsonAsync<JsonElement>()).TryGetProperty("errors", out _));
+    }
+
+    [PostgresFact]
+    public async Task UnitsAreDeletedOrArchivedUnderTheBookingLock()
+    {
+        await using var db = new AppDbContext(Options);
+        var model = new EqModel { Name = "Camera" };
+        db.EqItems.AddRange(
+            new EqItem { EqModel = model, InventoryNumber = "0-001-01" },
+            new EqItem { EqModel = model, InventoryNumber = "0-001-02" },
+            new EqItem { EqModel = model, InventoryNumber = "0-001-03" });
+        await db.SaveChangesAsync();
+        var ids = await db.EqItems.OrderBy(item => item.Id).Select(item => item.Id).ToListAsync();
+        var owner = await db.Users.OrderBy(user => user.Id).Select(user => user.Id).FirstAsync();
+        var start = DateTime.UtcNow.AddDays(10);
+        db.Carts.Add(new Cart
+        {
+            UserId = owner,
+            Items = [new CartItem { EqModelId = model.Id, Quantity = 2, SelectedItemIds = [ids[0], ids[1]] }]
+        });
+        db.Bookings.AddRange(
+            new Booking
+            {
+                UserId = owner, Reason = "Finished", Status = BookingStatus.Completed, StartTime = start, EndTime = start.AddHours(1),
+                BookingItems = [new BookingItem { EqItemId = ids[1], StartDate = start, EndDate = start.AddHours(1) }]
+            },
+            new Booking
+            {
+                UserId = owner, Reason = "Active", Status = BookingStatus.Approved, StartTime = start, EndTime = start.AddHours(1),
+                BookingItems = [new BookingItem { EqItemId = ids[2], StartDate = start, EndDate = start.AddHours(1) }]
+            });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var equipment = new EquipmentService(db);
+
+        // Never booked, and not the last unit of its model: deleted outright.
+        Assert.True(await equipment.DeleteItemAsync(ids[0]));
+        // Booked in the past: archived, so the finished booking keeps its unit.
+        Assert.True(await equipment.DeleteItemAsync(ids[1]));
+        // Held by an active booking: refused.
+        await Assert.ThrowsAsync<GraphQLException>(() => equipment.DeleteItemAsync(ids[2]));
+
+        db.ChangeTracker.Clear();
+        Assert.Equal(new[] { ids[1], ids[2] }, await db.EqItems.OrderBy(item => item.Id).Select(item => item.Id).ToListAsync());
+        Assert.NotNull((await db.EqItems.SingleAsync(item => item.Id == ids[1])).ArchivedAt);
+        Assert.Equal(new[] { ids[2] }, (await equipment.GetItemsByModelAsync(model.Id)).Select(item => item.Id));
+        var cartItem = await db.CartItems.AsNoTracking().SingleAsync();
+        Assert.Empty(cartItem.SelectedItemIds);
+        Assert.Equal(0, cartItem.Quantity);
+        // A new unit takes the next number: the archived one keeps its own for the history.
+        Assert.Equal("0-" + model.Id.ToString("D3") + "-04", (await equipment.CreateItemAsync(model.Id)).InventoryNumber);
+    }
+
     private async Task<Tokens> LoginAsync(string login)
     {
-        var data = await QueryAsync("mutation($input: LoginInput!) { login(input: $input) { accessToken refreshToken } }",
-            variables: new { input = new { login, password = Password } });
-        return ReadTokens(data.GetProperty("login"));
+        var (tokens, _) = await SignInAsync(
+            "mutation($input: LoginInput!) { login(input: $input) { accessToken refreshToken } }",
+            new { input = new { login, password = Password } }, "login");
+        return tokens;
+    }
+    // Signing in answers with the access token only; the refresh token arrives as a cookie.
+    private async Task<(Tokens Tokens, JsonElement Payload)> SignInAsync(string query, object variables, string field)
+    {
+        using var response = await SendAsync(query, variables: variables);
+        Assert.True(response.IsSuccessStatusCode, $"HTTP {(int)response.StatusCode}");
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(payload.TryGetProperty("errors", out var errors), errors.ToString());
+        var data = payload.GetProperty("data").GetProperty(field).Clone();
+        Assert.Equal(JsonValueKind.Null, data.GetProperty("refreshToken").ValueKind);
+        return (new Tokens(data.GetProperty("accessToken").GetString()!, ReadRefreshCookie(response)), data);
+    }
+    private static string ReadRefreshCookie(HttpResponseMessage response)
+    {
+        var cookie = Assert.Single(response.Headers.GetValues("Set-Cookie"));
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        var pair = cookie.Split(';')[0];
+        Assert.StartsWith(RefreshTokenCookie.Name + "=", pair);
+        return Uri.UnescapeDataString(pair[(RefreshTokenCookie.Name.Length + 1)..]);
     }
     private async Task<Tokens> RefreshAsync(string token)
     {
@@ -388,10 +492,12 @@ public class PostgresSessionTests : IAsyncLifetime
         Assert.False(payload.TryGetProperty("errors", out var errors), errors.ToString());
         return payload.GetProperty("data").Clone();
     }
-    private Task<HttpResponseMessage> SendAsync(string query, string? token = null, object? variables = null)
+    private Task<HttpResponseMessage> SendAsync(string query, string? token = null, object? variables = null, string? cookie = null)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/graphql") { Content = JsonContent.Create(new { query, variables }) };
         request.Headers.UserAgent.ParseAdd("SessionTests/1.0");
+        if (cookie is not null)
+            request.Headers.Add("Cookie", $"{RefreshTokenCookie.Name}={Uri.EscapeDataString(cookie)}");
         if (token is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return client.SendAsync(request);
     }

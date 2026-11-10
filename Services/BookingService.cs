@@ -7,8 +7,17 @@ using Microsoft.EntityFrameworkCore;
 
 namespace GUtv_backend_dotnet.Services;
 
-public class BookingService(AppDbContext db, TelegramNotificationService telegramNotificationService)
+public class BookingService(
+    AppDbContext db,
+    TelegramNotificationService telegramNotificationService,
+    BookingNotificationQueue? notificationQueue = null)
 {
+    // Unpaginated list queries predate the paged ones and are kept for old clients only.
+    public const int LegacyListLimit = 200;
+    public const int CalendarMaxDays = 100;
+    private const int DefaultPageSize = 30;
+    private const int EquipmentHistoryPageSize = 10;
+
     public async Task<Booking> CreateBookingAsync(CreateBookingInput input, int userId)
     {
         Booking booking;
@@ -127,16 +136,36 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         return await GetBookingEntityByIdAsync(booking.Id);
     }
 
-    internal async Task NotifyBookingCreatedAsync(Booking booking)
-    {
-        await telegramNotificationService.NotifyAdminsNewBooking(booking);
-        await telegramNotificationService.NotifyUserBookingCreated(booking);
-    }
+    internal Task NotifyBookingCreatedAsync(Booking booking) =>
+        DispatchNotificationAsync(async (notifications, cancellationToken) =>
+        {
+            await notifications.NotifyAdminsNewBooking(booking, cancellationToken);
+            await notifications.NotifyUserBookingCreated(booking, cancellationToken);
+        });
 
-    internal async Task NotifyBookingUpdatedAsync(Booking booking, int actorUserId)
+    internal Task NotifyBookingUpdatedAsync(Booking booking, int actorUserId) =>
+        DispatchNotificationAsync(async (notifications, cancellationToken) =>
+        {
+            await notifications.NotifyAdminsBookingUpdated(booking, cancellationToken);
+            await notifications.NotifyUserBookingUpdated(booking, actorUserId, cancellationToken);
+        });
+
+    private Task NotifyBookingStatusChangedAsync(Booking booking, BookingStatus oldStatus, int actorUserId) =>
+        DispatchNotificationAsync(async (notifications, cancellationToken) =>
+        {
+            await notifications.NotifyUserBookingStatusChanged(booking, oldStatus, cancellationToken);
+            await notifications.NotifyAdminsBookingDecided(booking, oldStatus, actorUserId, cancellationToken);
+        });
+
+    // Telegram is slow or unreachable at times, so a request never waits for it: the queue
+    // sends after the response. Without a queue (tests, tools) the messages are sent inline.
+    private Task DispatchNotificationAsync(Func<TelegramNotificationService, CancellationToken, Task> send)
     {
-        await telegramNotificationService.NotifyAdminsBookingUpdated(booking);
-        await telegramNotificationService.NotifyUserBookingUpdated(booking, actorUserId);
+        if (notificationQueue is null)
+            return send(telegramNotificationService, CancellationToken.None);
+
+        notificationQueue.Enqueue(send);
+        return Task.CompletedTask;
     }
 
     private void RequireTransaction()
@@ -161,17 +190,17 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<List<Booking>> GetBookingsByUserAsync(int userId)
     {
-        var bookings = await FindBookingWithIncludes()
-            .Where(b => b.UserId == userId)
+        return await NewestFirst(FindBookingWithIncludes().Where(b => b.UserId == userId))
             .ToListAsync();
-
-        return bookings;
     }
 
     public async Task<List<Booking>> GetAllBookingsAsync()
     {
-        return await FindBookingWithIncludes().ToListAsync();
+        return await NewestFirst(FindBookingWithIncludes()).ToListAsync();
     }
+
+    private static IQueryable<Booking> NewestFirst(IQueryable<Booking> query) =>
+        query.OrderByDescending(b => b.CreationTime).ThenByDescending(b => b.Id).Take(LegacyListLimit);
 
     public Task<BookingPagePayload> GetAllBookingsPageAsync(
         int page = 1,
@@ -189,14 +218,26 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         GetBookingsPageAsync(FindBookingWithIncludes().Where(b => b.UserId == userId),
             page, search, status, oldestFirst);
 
+    // The usage history of one unit, most recent use first.
+    public Task<BookingPagePayload> GetBookingsPageByEquipmentItemAsync(
+        int eqItemId,
+        int page = 1,
+        string? search = null,
+        BookingStatus? status = null) =>
+        GetBookingsPageAsync(
+            FindBookingWithIncludes().Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItemId)),
+            page, search?.Trim().TrimStart('#'), status, oldestFirst: false,
+            pageSize: EquipmentHistoryPageSize, orderByStartTime: true);
+
     private async Task<BookingPagePayload> GetBookingsPageAsync(
         IQueryable<Booking> query,
         int page,
         string? search,
         BookingStatus? status,
-        bool oldestFirst)
+        bool oldestFirst,
+        int pageSize = DefaultPageSize,
+        bool orderByStartTime = false)
     {
-        const int pageSize = 30;
         if (page < 1)
             throw new GraphQLException("Номер страницы должен быть больше 0");
 
@@ -219,9 +260,11 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         var totalCount = await query.CountAsync();
         var lastPage = totalCount == 0 ? 1 : (totalCount - 1) / pageSize + 1;
         page = Math.Min(page, lastPage);
-        var orderedQuery = oldestFirst
-            ? query.OrderBy(b => b.CreationTime).ThenBy(b => b.Id)
-            : query.OrderByDescending(b => b.CreationTime).ThenByDescending(b => b.Id);
+        var orderedQuery = orderByStartTime
+            ? query.OrderByDescending(b => b.StartTime).ThenByDescending(b => b.Id)
+            : oldestFirst
+                ? query.OrderBy(b => b.CreationTime).ThenBy(b => b.Id)
+                : query.OrderByDescending(b => b.CreationTime).ThenByDescending(b => b.Id);
         var items = await orderedQuery.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync();
 
         return new BookingPagePayload(items, totalCount, page, pageSize);
@@ -229,11 +272,18 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<List<CalendarBookingPayload>> GetCalendarBookingsAsync(DateTime? start = null, DateTime? end = null)
     {
-        var query = db.Bookings.AsNoTracking()
-            .Where(b => b.Status == BookingStatus.Pending || b.Status == BookingStatus.Approved);
+        // The calendar always asks for the weeks it shows. An open-ended request would return
+        // every active booking with its owner's name, so it is refused.
+        if (!start.HasValue || !end.HasValue)
+            throw new GraphQLException("Укажите начало и конец периода календаря");
+        if (start.Value >= end.Value)
+            throw new GraphQLException("Начало периода должно быть раньше конца");
+        if (end.Value - start.Value > TimeSpan.FromDays(CalendarMaxDays))
+            throw new GraphQLException($"Период календаря не может превышать {CalendarMaxDays} дней");
 
-        if (start.HasValue && end.HasValue)
-            query = query.Where(b => b.StartTime < end.Value && b.EndTime > start.Value);
+        var query = db.Bookings.AsNoTracking()
+            .Where(b => b.Status == BookingStatus.Pending || b.Status == BookingStatus.Approved)
+            .Where(b => b.StartTime < end.Value && b.EndTime > start.Value);
 
         return await query
             .OrderBy(b => b.StartTime)
@@ -254,17 +304,14 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
     public async Task<List<Booking>> GetBookingsByEquipmentItemAsync(int eqItemId)
     {
-        var bookings = await FindBookingWithIncludes()
-            .Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItemId))
+        return await NewestFirst(FindBookingWithIncludes()
+                .Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItemId)))
             .ToListAsync();
-
-        return bookings;
     }
 
     public async Task<List<Booking>> GetBookingsByStatusAsync(BookingStatus status)
     {
-        var bookings = await FindBookingWithIncludes()
-            .Where(b => b.Status == status)
+        var bookings = await NewestFirst(FindBookingWithIncludes().Where(b => b.Status == status))
             .ToListAsync();
 
         if (bookings.Count == 0)
@@ -283,8 +330,8 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
             ?? throw new GraphQLException(
                 $"Оборудование с инвентарным номером {inventoryNumber} не найдено");
 
-        var bookings = await FindBookingWithIncludes()
-            .Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItem.Id))
+        var bookings = await NewestFirst(FindBookingWithIncludes()
+                .Where(b => b.BookingItems.Any(bi => bi.EqItemId == eqItem.Id)))
             .ToListAsync();
 
         if (bookings.Count == 0)
@@ -317,7 +364,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
-        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+        await NotifyBookingStatusChangedAsync(updatedBooking, oldStatus, actorUserId);
 
         return updatedBooking;
     }
@@ -342,7 +389,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
-        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+        await NotifyBookingStatusChangedAsync(updatedBooking, oldStatus, actorUserId);
 
         return updatedBooking;
     }
@@ -385,7 +432,7 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
-        await telegramNotificationService.NotifyUserBookingStatusChanged(updatedBooking, oldStatus);
+        await NotifyBookingStatusChangedAsync(updatedBooking, oldStatus, userId);
 
         return updatedBooking;
     }
@@ -424,7 +471,8 @@ public class BookingService(AppDbContext db, TelegramNotificationService telegra
 
             var selectedIds = requestedItem.SelectedItemIds ?? [];
             var selected = await db.EqItems.AsNoTracking()
-                .Where(item => item.EqModelId == model.Id && selectedIds.Contains(item.Id))
+                .Where(item => item.EqModelId == model.Id && item.ArchivedAt == null &&
+                               selectedIds.Contains(item.Id))
                 .ToListAsync();
             if (selected.Count != selectedIds.Count)
                 throw new GraphQLException($"Выбранный экземпляр не найден или не относится к модели {model.Name}");

@@ -60,7 +60,7 @@ public class LinkCommand(UserService userService, RequestRateLimiter rateLimiter
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Telegram link failed. ChatId: {ChatId}, Code: {Code}", chatId, code);
+            logger.LogError(ex, "Telegram link failed. ChatId: {ChatId}", chatId);
             await botClient.SendMessage(
                 chatId: chatId,
                 text: "❌ Произошла ошибка при привязке аккаунта.",

@@ -1,4 +1,5 @@
 using GUtv_backend_dotnet.Models;
+using GUtv_backend_dotnet.Services;
 using HotChocolate.Types;
 
 namespace GUtv_backend_dotnet.GraphQL.Types;
@@ -44,6 +45,20 @@ public sealed class EqAccessType : EnumType<EqAccess>
         descriptor.Value(EqAccess.User).Name(nameof(EqAccess.User));
         descriptor.Value(EqAccess.Osnova).Name(nameof(EqAccess.Osnova));
         descriptor.Value(EqAccess.Ronin).Name(nameof(EqAccess.Ronin));
+    }
+}
+
+public sealed class UserListGroupType : EnumType<UserListGroup>
+{
+    protected override void Configure(IEnumTypeDescriptor<UserListGroup> descriptor)
+    {
+        descriptor.Name("UserListGroup");
+        descriptor.BindValuesExplicitly();
+        descriptor.Value(UserListGroup.All).Name(nameof(UserListGroup.All));
+        descriptor.Value(UserListGroup.Admins).Name(nameof(UserListGroup.Admins));
+        descriptor.Value(UserListGroup.Osnova).Name(nameof(UserListGroup.Osnova));
+        descriptor.Value(UserListGroup.Users).Name(nameof(UserListGroup.Users));
+        descriptor.Value(UserListGroup.Banned).Name(nameof(UserListGroup.Banned));
     }
 }
 

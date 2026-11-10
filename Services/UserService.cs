@@ -82,6 +82,61 @@ public class UserService
         return await _db.Users.FindAsync(id);
     }
 
+    public const int UsersPageSize = 50;
+
+    // The administrators' user list: one page, plus how many people each tab holds.
+    public async Task<UserPagePayload> GetUsersPageAsync(
+        int page = 1, string? search = null, UserListGroup group = UserListGroup.All, bool descending = false)
+    {
+        if (page < 1)
+            throw new GraphQLException("Номер страницы должен быть больше 0");
+
+        var byGroup = await _db.Users.AsNoTracking()
+            .GroupBy(u => new { u.Banned, u.Role })
+            .Select(g => new { g.Key.Banned, g.Key.Role, Count = g.Count() })
+            .ToListAsync();
+        int CountOf(UserListGroup wanted) =>
+            byGroup.Where(g => GroupOf(g.Banned, g.Role) == wanted).Sum(g => g.Count);
+        var counts = new UserGroupCounts(
+            byGroup.Sum(g => g.Count), CountOf(UserListGroup.Admins), CountOf(UserListGroup.Osnova),
+            CountOf(UserListGroup.Users), CountOf(UserListGroup.Banned));
+
+        var query = _db.Users.AsNoTracking();
+        // A banned person is listed under "banned" only, whatever their role.
+        query = group switch
+        {
+            UserListGroup.Banned => query.Where(u => u.Banned),
+            UserListGroup.Admins => query.Where(u => !u.Banned && u.Role == UserRole.Admin),
+            UserListGroup.Osnova => query.Where(u =>
+                !u.Banned && (u.Role == UserRole.Osnova || u.Role == UserRole.Ronin)),
+            UserListGroup.Users => query.Where(u => !u.Banned && u.Role == UserRole.User),
+            _ => query
+        };
+
+        var term = search?.Trim().TrimStart('@').ToLowerInvariant();
+        if (!string.IsNullOrEmpty(term))
+            query = query.Where(u =>
+                u.Name.ToLower().Contains(term) ||
+                u.Login.ToLower().Contains(term) ||
+                (u.TelegramUsername != null && u.TelegramUsername.ToLower().Contains(term)));
+
+        var totalCount = await query.CountAsync();
+        var lastPage = totalCount == 0 ? 1 : (totalCount - 1) / UsersPageSize + 1;
+        page = Math.Min(page, lastPage);
+        var ordered = descending
+            ? query.OrderByDescending(u => u.Name.ToLower()).ThenByDescending(u => u.Id)
+            : query.OrderBy(u => u.Name.ToLower()).ThenBy(u => u.Id);
+        var items = await ordered.Skip((page - 1) * UsersPageSize).Take(UsersPageSize).ToListAsync();
+
+        return new UserPagePayload(items, totalCount, page, UsersPageSize, counts);
+    }
+
+    private static UserListGroup GroupOf(bool banned, UserRole role) =>
+        banned ? UserListGroup.Banned
+        : role == UserRole.Admin ? UserListGroup.Admins
+        : role is UserRole.Osnova or UserRole.Ronin ? UserListGroup.Osnova
+        : UserListGroup.Users;
+
     public async Task<User> RegenerateAvatarSeedAsync(int userId)
     {
         var user = await _db.Users.FindAsync(userId)
@@ -95,6 +150,18 @@ public class UserService
     public bool VerifyPassword(string password, string passwordHash)
     {
         return BCrypt.Net.BCrypt.Verify(password, passwordHash);
+    }
+
+    // A login attempt for an unknown account still pays for one password check, so the
+    // response time does not reveal which logins exist.
+    private static readonly Lazy<string> UnknownAccountHash =
+        new(() => BCrypt.Net.BCrypt.HashPassword(Guid.NewGuid().ToString("N")));
+
+    public async Task<User?> FindByCredentialsAsync(string login, string password)
+    {
+        var user = await GetByLoginAsync(login);
+        var passwordMatches = VerifyPassword(password, user?.PasswordHash ?? UnknownAccountHash.Value);
+        return user is not null && passwordMatches ? user : null;
     }
 
     public async Task<User?> GetByTelegramChatIdAsync(long chatId)
@@ -243,3 +310,21 @@ public class UserService
         return Convert.ToHexString(RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
     }
 }
+
+public enum UserListGroup
+{
+    All,
+    Admins,
+    Osnova,
+    Users,
+    Banned
+}
+
+public record UserGroupCounts(int All, int Admins, int Osnova, int Users, int Banned);
+
+public record UserPagePayload(
+    IReadOnlyList<User> Items,
+    int TotalCount,
+    int Page,
+    int PageSize,
+    UserGroupCounts Counts);

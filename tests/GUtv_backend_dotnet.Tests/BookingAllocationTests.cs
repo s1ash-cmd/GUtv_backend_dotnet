@@ -96,7 +96,7 @@ public class BookingAllocationTests
     {
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [2])), 2);
-        await fixture.Carts.AddCartItemAsync(1, 1, 1, 2);
+        await fixture.Carts.AddCartItemAsync(1, 1, 2);
         await fixture.Carts.SetCartDetailsAsync(1, new("Съемка", Start, Start.AddHours(2), null));
 
         var error = await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.CreateBookingFromCartAsync(1));
@@ -120,7 +120,7 @@ public class BookingAllocationTests
         await fixture.Db.SaveChangesAsync();
 
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [selectedId])), 1));
-        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.AddCartItemAsync(1, 1, 1, selectedId));
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.AddCartItemAsync(1, 1, selectedId));
         Assert.Empty(await fixture.Db.Bookings.ToListAsync());
         Assert.Empty(await fixture.Db.CartItems.ToListAsync());
     }
@@ -142,8 +142,8 @@ public class BookingAllocationTests
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 2, [2, 2])), 1));
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1, 2])), 1));
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [2]), new CreateBookingEquipmentInput(1, 1, [2])), 1));
-        await fixture.Carts.AddCartItemAsync(1, 1, 1, 2);
-        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.AddCartItemAsync(1, 1, 1, 2));
+        await fixture.Carts.AddCartItemAsync(1, 1, 2);
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.AddCartItemAsync(1, 1, 2));
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.SetCartItemSelectionAsync(1, 1, [1, 1]));
         Assert.Equal(1, Assert.Single((await fixture.Carts.GetOrCreateCartAsync(1)).Items).Quantity);
     }
@@ -332,6 +332,167 @@ public class BookingAllocationTests
         var granted = await fixture.Bookings.UpdateBookingAsync(booking.Id, Input(new CreateBookingEquipmentInput(1, 1, [1])), 2, true);
         Assert.Single(granted.BookingItems);
         Assert.DoesNotContain("missingOsnovaAccess", granted.WarningsJson);
+    }
+
+    [Fact]
+    public async Task CartDetailsKeepOmittedFieldsAndClearExplicitNulls()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Carts.SetCartDetailsAsync(1, new("Съемка", Start, Start.AddHours(2), "Нужен штатив"));
+
+        // Only the reason is sent: the dates and the comment stay.
+        var cart = await fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(Reason: "  Монтаж  "));
+        Assert.Equal("Монтаж", cart.Reason);
+        Assert.Equal(Start, cart.StartTime);
+        Assert.Equal(Start.AddHours(2), cart.EndTime);
+        Assert.Equal("Нужен штатив", cart.Comment);
+
+        cart = await fixture.Carts.SetCartDetailsAsync(1,
+            new UpdateCartDetailsInput(Reason: null, StartTime: null, EndTime: null, Comment: null));
+        Assert.Equal("", cart.Reason);
+        Assert.Null(cart.StartTime);
+        Assert.Null(cart.EndTime);
+        Assert.Null(cart.Comment);
+
+        // An empty comment is no comment, as on the booking form.
+        cart = await fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(Comment: "   "));
+        Assert.Null(cart.Comment);
+    }
+
+    [Fact]
+    public async Task CartRejectsAStartThatDoesNotPrecedeTheSavedEnd()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Carts.SetCartDetailsAsync(1, new("Съемка", Start, Start.AddHours(2), null));
+
+        await Assert.ThrowsAsync<GraphQLException>(() =>
+            fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(StartTime: Start.AddHours(3))));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(Start, (await fixture.Db.Carts.AsNoTracking().SingleAsync()).StartTime);
+    }
+
+    [Fact]
+    public async Task EditingABookingNeverDiscardsTheCartWithoutConsent()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var first = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        var second = await fixture.Bookings.CreateBookingAsync(
+            new CreateBookingInput("Монтаж", Start.AddDays(1), Start.AddDays(1).AddHours(2), null,
+                [new CreateBookingEquipmentInput(1, 1, [2])]), 1);
+        await fixture.Carts.SetCartItemSelectionAsync(1, 1, [2]);
+        await fixture.Carts.SetCartDetailsAsync(1, new("Своя съёмка", Start, Start.AddHours(1), null));
+
+        // The cart holds a draft of its own: editing asks first and changes nothing.
+        var error = await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.PrepareBookingEditAsync(1, first.Id, false));
+        Assert.Equal(CartService.ReplaceRequiredCode, Assert.Single(error.Errors).Code);
+        fixture.Db.ChangeTracker.Clear();
+        var kept = await fixture.Carts.GetOrCreateCartAsync(1);
+        Assert.Null(kept.EditingBookingId);
+        Assert.Equal("Своя съёмка", kept.Reason);
+        Assert.Equal(new[] { 2 }, Assert.Single(kept.Items).SelectedItemIds);
+
+        // Consent replaces it.
+        var editing = await fixture.Carts.PrepareBookingEditAsync(1, first.Id, false, replaceCart: true);
+        Assert.Equal(first.Id, editing.EditingBookingId);
+        Assert.Equal(new[] { 1 }, Assert.Single(editing.Items).SelectedItemIds);
+
+        // Opening the same booking again continues the edit in progress.
+        await fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(Reason: "Уточнённая причина"));
+        var continued = await fixture.Carts.PrepareBookingEditAsync(1, first.Id, false);
+        Assert.Equal("Уточнённая причина", continued.Reason);
+
+        // Another booking, or repeating one, would drop the unsaved edit: both ask first.
+        Assert.Equal(CartService.ReplaceRequiredCode, Assert.Single((await Assert.ThrowsAsync<GraphQLException>(() =>
+            fixture.Carts.PrepareBookingEditAsync(1, second.Id, false))).Errors).Code);
+        Assert.Equal(CartService.ReplaceRequiredCode, Assert.Single((await Assert.ThrowsAsync<GraphQLException>(() =>
+            fixture.Carts.AddBookingItemsToCartAsync(1, second.Id))).Errors).Code);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal("Уточнённая причина", (await fixture.Carts.GetOrCreateCartAsync(1)).Reason);
+
+        var repeated = await fixture.Carts.AddBookingItemsToCartAsync(1, second.Id, replaceCart: true);
+        Assert.Null(repeated.EditingBookingId);
+        Assert.Equal(new[] { 2 }, Assert.Single(repeated.Items).SelectedItemIds);
+    }
+
+    [Fact]
+    public async Task RepeatingABookingAddsToAnOrdinaryCartWithoutAsking()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        fixture.Db.EqModels.Add(new EqModel { Id = 2, Name = "Tripod" });
+        fixture.Db.EqItems.Add(new EqItem { Id = 3, EqModelId = 2, InventoryNumber = "TRI-1" });
+        await fixture.Db.SaveChangesAsync();
+        await fixture.Carts.SetCartItemSelectionAsync(1, 2, [3]);
+
+        var cart = await fixture.Carts.AddBookingItemsToCartAsync(1, booking.Id);
+
+        Assert.Equal(new[] { 1, 2 }, cart.Items.Select(item => item.EqModelId).Order());
+    }
+
+    [Fact]
+    public async Task UnitThatWasNeverBookedIsDeletedEvenWhenItIsNotTheLastOne()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Carts.SetCartItemSelectionAsync(1, 1, [1, 2]);
+        fixture.Db.ChangeTracker.Clear();
+
+        Assert.True(await new EquipmentService(fixture.Db).DeleteItemAsync(1));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Equal(new[] { 2 }, await fixture.Db.EqItems.Select(item => item.Id).ToListAsync());
+        // The unit also leaves the carts that had it selected.
+        var cartItem = Assert.Single((await fixture.Carts.GetOrCreateCartAsync(1)).Items);
+        Assert.Equal(new[] { 2 }, cartItem.SelectedItemIds);
+        Assert.Equal(1, cartItem.Quantity);
+    }
+
+    [Fact]
+    public async Task UnitWithFinishedHistoryIsArchivedAndStaysInThatHistory()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        await fixture.Bookings.CancelBookingAsync(booking.Id, 1, false, booking.Revision);
+        fixture.Db.ChangeTracker.Clear();
+        var equipment = new EquipmentService(fixture.Db);
+
+        Assert.True(await equipment.DeleteItemAsync(1));
+
+        fixture.Db.ChangeTracker.Clear();
+        Assert.NotNull((await fixture.Db.EqItems.AsNoTracking().SingleAsync(item => item.Id == 1)).ArchivedAt);
+        // Gone from every list a unit can be picked from...
+        Assert.Equal(new[] { 2 }, (await equipment.GetItemsByModelAsync(1)).Select(item => item.Id));
+        Assert.Equal(new[] { 2 }, (await equipment.GetAllItemsAsync()).Select(item => item.Id));
+        Assert.Equal(new[] { 2 }, Assert.Single(await equipment.GetModelsWithItemsAsync()).Items.Select(item => item.Id));
+        Assert.Equal(new[] { 2 }, (await equipment.GetAvailableItemsByModelAsync(1, Start, Start.AddHours(2))).Select(item => item.Id));
+        Assert.Equal(new[] { 2 }, (await fixture.Carts.GetEquipmentOptionsAsync(1, 1, Start, Start.AddHours(2))).Select(item => item.Id));
+        // ...and it can no longer be booked or put into a cart,
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Carts.AddCartItemAsync(1, 1, 1));
+        await Assert.ThrowsAsync<GraphQLException>(() =>
+            fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1));
+        // while the old booking still shows which unit it was.
+        var history = await fixture.Bookings.GetBookingByIdAsync(booking.Id, 1, false);
+        Assert.Equal("CAM-1", Assert.Single(history.BookingItems).EqItem.InventoryNumber);
+        // Deleting it again reports that it is gone.
+        await Assert.ThrowsAsync<GraphQLException>(() => equipment.DeleteItemAsync(1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task UnitInAnActiveBookingCannotBeRemoved(bool approved)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        if (approved) await fixture.Bookings.ApproveBookingAsync(booking.Id, booking.Revision, 2);
+        fixture.Db.ChangeTracker.Clear();
+
+        var error = await Assert.ThrowsAsync<GraphQLException>(() => new EquipmentService(fixture.Db).DeleteItemAsync(1));
+
+        Assert.Contains($"#{booking.Id}", Assert.Single(error.Errors).Message);
+        fixture.Db.ChangeTracker.Clear();
+        Assert.Null((await fixture.Db.EqItems.AsNoTracking().SingleAsync(item => item.Id == 1)).ArchivedAt);
+        Assert.Null(fixture.Db.Database.CurrentTransaction);
     }
 
     private sealed class Fixture(SqliteConnection connection, AppDbContext db, LockInterceptor locks) : IAsyncDisposable

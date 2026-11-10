@@ -24,7 +24,17 @@ public class UserQueries
     [UseProjection]
     [UseFiltering]
     [UseSorting]
+    [GraphQLDeprecated("Возвращает всех пользователей сразу. Используйте usersPage.")]
     public IQueryable<User> GetUsers(AppDbContext db) => db.Users;
+
+    [Authorize(Roles = ["Admin"])]
+    public Task<UserPagePayload> GetUsersPage(
+        UserService userService,
+        int page = 1,
+        string? search = null,
+        UserListGroup group = UserListGroup.All,
+        bool descending = false) =>
+        userService.GetUsersPageAsync(page, search, group, descending);
 
     [Authorize]
     public async Task<User> Me(

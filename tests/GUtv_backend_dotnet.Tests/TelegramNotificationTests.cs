@@ -10,7 +10,10 @@ using GUtv_backend_dotnet.Services.Telegram;
 using HotChocolate;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using GUtv_backend_dotnet.Services.Telegram.Commands;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Telegram.Bot;
 
@@ -271,7 +274,7 @@ public class TelegramNotificationTests
         if (fromCart)
         {
             await fixture.Carts.PrepareBookingEditAsync(actorId, 1, actorId == 2);
-            await fixture.Carts.SetCartDetailsAsync(actorId, new UpdateCartDetailsInput("Updated reason", null, null, null));
+            await fixture.Carts.SetCartDetailsAsync(actorId, new UpdateCartDetailsInput("Updated reason"));
             booking = await fixture.Carts.UpdateBookingFromCartAsync(actorId, 1, actorId == 2);
         }
         else
@@ -400,6 +403,132 @@ public class TelegramNotificationTests
         Assert.Null(fixture.Db.Database.CurrentTransaction);
     }
 
+    [Theory]
+    [InlineData("approve", "Заявка одобрена")]
+    [InlineData("reject", "Заявка отклонена")]
+    public async Task DecisionReachesTheOwnerAndTheOtherAdministratorButNotTheOneWhoDecided(string action, string outcome)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        if (action == "approve") await fixture.Bookings.ApproveBookingAsync(1, 1, 2, "Admin: берите <аккуратно>");
+        else await fixture.Bookings.CancelBookingAsync(1, 2, true, 1, "Admin: берите <аккуратно>");
+
+        Assert.Equal(2, fixture.Handler.Requests.Count);
+        Assert.Contains("Статус обновлен", Assert.Single(fixture.Handler.Requests, request => request.ChatId == OwnerChat).Text);
+        var other = Assert.Single(fixture.Handler.Requests, request => request.ChatId == SecondAdminChat);
+        Assert.Equal("Html", other.Payload.GetProperty("parse_mode").GetString());
+        Assert.Contains("Бронирование #1", other.Text);
+        Assert.Contains(outcome, other.Text);
+        Assert.Contains("Решение принял:</b> Admin", other.Text);
+        Assert.Contains("берите &lt;аккуратно&gt;", other.Text);
+        // The outdated request carried buttons; its follow-up must not offer a decision again.
+        Assert.False(other.Payload.TryGetProperty("reply_markup", out _));
+        Assert.All(fixture.Handler.Requests, request => Assert.False(request.HadActiveTransaction));
+    }
+
+    [Fact]
+    public async Task OwnerCancellingAPendingRequestTellsEveryAdministrator()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+
+        await fixture.Bookings.CancelBookingAsync(1, 1, false, 1);
+
+        Assert.Equal(3, fixture.Handler.Requests.Count);
+        foreach (var chat in new[] { AdminChat, SecondAdminChat })
+        {
+            var admin = Assert.Single(fixture.Handler.Requests, request => request.ChatId == chat);
+            Assert.Contains("Заявка отменена заявителем", admin.Text);
+            Assert.DoesNotContain("Решение принял", admin.Text);
+        }
+    }
+
+    [Fact]
+    public async Task AdministratorsAreOnlyToldWhenARequestStopsWaitingForADecision()
+    {
+        await using var fixture = await Fixture.CreateAsync(ownerRole: UserRole.Admin);
+
+        // The owner is an administrator too: they get the status message, not a second notice.
+        var approved = await fixture.Bookings.ApproveBookingAsync(1, 1, 2);
+        Assert.Equal(new[] { OwnerChat, SecondAdminChat }, fixture.Handler.Requests.Select(request => request.ChatId).Order());
+
+        // Completing an approved booking leaves no stale buttons behind, so only the owner hears of it.
+        fixture.Handler.Requests.Clear();
+        await fixture.Bookings.CompleteBookingAsync(1, approved.Revision, 2);
+        Assert.Equal(OwnerChat, Assert.Single(fixture.Handler.Requests).ChatId);
+    }
+
+    [Fact]
+    public async Task QueuedNotificationsLeaveTheRequestAndAFailedOneDoesNotStopTheRest()
+    {
+        await using var fixture = await Fixture.CreateAsync(seedBooking: false);
+        await using var provider = fixture.CreateNotificationServices();
+        var queue = new BookingNotificationQueue(provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<BookingNotificationQueue>.Instance);
+        var bookings = new BookingService(fixture.Db, fixture.Notifications, queue);
+
+        var booking = await bookings.CreateBookingAsync(CreateInput(), 1);
+
+        // The booking is saved and returned while nothing has been sent yet.
+        Assert.Equal(BookingStatus.Pending, booking.Status);
+        Assert.Empty(fixture.Handler.Requests);
+
+        queue.Enqueue((_, _) => throw new InvalidOperationException("Simulated failure of an earlier notification"));
+        queue.Enqueue((notifications, cancellationToken) =>
+            notifications.NotifyUserBookingStatusChanged(booking, BookingStatus.Approved, cancellationToken));
+        await queue.StartAsync(CancellationToken.None);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (fixture.Handler.Requests.Count < 4 && DateTime.UtcNow < deadline)
+                await Task.Delay(20);
+        }
+        finally
+        {
+            await queue.StopAsync(CancellationToken.None);
+        }
+
+        // Two administrators and the owner for the new booking, then the job queued after the failed one.
+        Assert.Equal(new[] { OwnerChat, OwnerChat, AdminChat, SecondAdminChat },
+            fixture.Handler.Requests.Select(request => request.ChatId).Order());
+    }
+
+    [Fact]
+    public void BookingListForTelegramShowsWholeBookingsWithinTheMessageLimit()
+    {
+        var owner = new User { Id = 1, Name = "Owner" };
+        var model = new EqModel { Id = 1, Name = "Camera <&> " + new string('"', 200) };
+        var bookings = Enumerable.Range(1, 30).Select(id => new Booking
+        {
+            Id = id, User = owner, UserId = 1, Status = BookingStatus.Approved,
+            Reason = "Reason <b>&</b> " + string.Concat(Enumerable.Repeat("😀<&>\"", 300)),
+            Comment = "Comment <&> " + new string('&', 2000),
+            AdminComment = "Admin <&> " + new string('<', 2000),
+            StartTime = new DateTime(2030, 1, 10, 10, 0, 0, DateTimeKind.Utc),
+            EndTime = new DateTime(2030, 1, 10, 12, 0, 0, DateTimeKind.Utc),
+            BookingItems = Enumerable.Range(1, 12).Select(index => new BookingItem
+            {
+                Id = index, EqItem = new EqItem { Id = index, EqModel = model, InventoryNumber = $"CAM-{index}" }
+            }).ToList()
+        }).ToList();
+
+        var text = BookingFilterCommand.BuildMessage("Все <бронирования>", bookings, totalCount: 120);
+
+        Assert.InRange(text.Length, 1, 4096);
+        AssertValidUtf16(text);
+        // Telegram parses this markup strictly: every tag must be closed and every entity complete.
+        var plainText = XElement.Parse($"<root>{text}</root>", LoadOptions.PreserveWhitespace).Value;
+        var shown = System.Text.RegularExpressions.Regex.Matches(plainText, @"Бронирование #\d+").Count;
+        Assert.InRange(shown, 1, 29);
+        Assert.Contains($"показаны последние {shown} из 120", plainText);
+        Assert.Contains("Все <бронирования>", plainText);
+        Assert.Contains("… и ещё 7", plainText);
+        // Every booking that was started is complete, down to its last line.
+        Assert.Equal(shown, System.Text.RegularExpressions.Regex.Matches(plainText, "Админ: ").Count);
+
+        var whole = BookingFilterCommand.BuildMessage("Одобренные", bookings.Take(1).ToList(), totalCount: 1);
+        Assert.DoesNotContain("показаны последние", whole);
+    }
+
     private static void AssertOwnerAndAdminNotifications(Fixture fixture, string ownerHeading)
     {
         Assert.Equal(3, fixture.Handler.Requests.Count);
@@ -427,7 +556,7 @@ public class TelegramNotificationTests
     {
         var input = CreateInput();
         await fixture.Carts.SetCartDetailsAsync(1, new UpdateCartDetailsInput(input.Reason, input.StartTime, input.EndTime, input.Comment));
-        await fixture.Carts.AddCartItemAsync(1, 1, quantity);
+        await fixture.Carts.AddCartItemAsync(1, 1);
         if (quantity == 1) await fixture.Carts.SetCartItemSelectionAsync(1, 1, [1]);
     }
 
@@ -453,6 +582,7 @@ public class TelegramNotificationTests
     {
         private readonly SqliteConnection _connection;
         private readonly HttpClient _httpClient;
+        private readonly TelegramBotClient _bot;
         public AppDbContext Db { get; }
         public RecordingHandler Handler { get; }
         public TelegramNotificationService Notifications { get; }
@@ -465,8 +595,8 @@ public class TelegramNotificationTests
             Db = db;
             Handler = new RecordingHandler(db);
             _httpClient = new HttpClient(Handler);
-            var bot = new TelegramBotClient("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", _httpClient);
-            Notifications = new TelegramNotificationService(bot, db, NullLogger<TelegramNotificationService>.Instance);
+            _bot = new TelegramBotClient("123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", _httpClient);
+            Notifications = new TelegramNotificationService(_bot, db, NullLogger<TelegramNotificationService>.Instance);
             Bookings = new BookingService(db, Notifications);
             Carts = new CartService(db, Bookings);
         }
@@ -501,6 +631,18 @@ public class TelegramNotificationTests
             await db.SaveChangesAsync();
             db.ChangeTracker.Clear();
             return new Fixture(connection, db);
+        }
+
+        // What the queue resolves for each job: its own context on the same database.
+        public ServiceProvider CreateNotificationServices()
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddSingleton<ITelegramBotClient>(_bot);
+            services.AddScoped<AppDbContext>(_ => new NotificationTestDbContext(
+                new DbContextOptionsBuilder<AppDbContext>().UseSqlite(_connection).Options));
+            services.AddScoped<TelegramNotificationService>();
+            return services.BuildServiceProvider();
         }
 
         public async ValueTask DisposeAsync()

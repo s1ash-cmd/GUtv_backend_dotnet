@@ -27,7 +27,7 @@ public class UserMutation
             joinYear: null);
 
         var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
-        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
+        return SignIn(httpContextAccessor.HttpContext, session);
     }
 
     public async Task<AuthPayload> Login(
@@ -39,38 +39,51 @@ public class UserMutation
     {
         var client = RequestRateLimiter.ClientKey(httpContextAccessor.HttpContext);
         var account = RequestRateLimiter.AccountKey(input.Login);
+        // An address never contains '|', so the two parts cannot run into each other.
+        var accountAndClient = $"{client}|{account}";
         var user = await rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerClient, client, () =>
-            rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerAccount, account, async () =>
-            {
-                var candidate = await userService.GetByLoginAsync(input.Login);
-                if (candidate == null || !userService.VerifyPassword(input.Password, candidate.PasswordHash))
-                    throw new GraphQLException("Неверный логин или пароль");
-                return candidate;
-            }));
+            rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerAccount, account, () =>
+                rateLimiter.LimitFailuresAsync(RateLimitPolicy.LoginFailuresPerAccountAndClient, accountAndClient, async () =>
+                    await userService.FindByCredentialsAsync(input.Login, input.Password)
+                    ?? throw new GraphQLException("Неверный логин или пароль"))));
 
         var session = await sessionService.CreateAsync(user.Id, httpContextAccessor.HttpContext?.Request.Headers.UserAgent.ToString());
-        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
+        return SignIn(httpContextAccessor.HttpContext, session);
     }
 
+    // The site sends no argument: its refresh token is the HttpOnly cookie. Pages opened
+    // before the cookie was introduced still pass the token they hold; that call moves
+    // them to the cookie, and they keep receiving the rotated token until they reload.
     public async Task<AuthPayload> RefreshToken(
-        string refreshToken,
         UserSessionService sessionService,
         IHttpContextAccessor httpContextAccessor,
-        RequestRateLimiter rateLimiter)
+        RequestRateLimiter rateLimiter,
+        string? refreshToken = null)
     {
-        rateLimiter.Acquire(RateLimitPolicy.RefreshPerClient,
-            RequestRateLimiter.ClientKey(httpContextAccessor.HttpContext));
-        var session = await sessionService.RotateAsync(refreshToken);
-        return new AuthPayload(session.User, session.AccessToken, session.RefreshToken);
+        var context = httpContextAccessor.HttpContext;
+        rateLimiter.Acquire(RateLimitPolicy.RefreshPerClient, RequestRateLimiter.ClientKey(context));
+
+        var fromArgument = !string.IsNullOrWhiteSpace(refreshToken);
+        var token = fromArgument ? refreshToken! : RefreshTokenCookie.Read(context);
+        if (token is null)
+            throw new GraphQLException("Недействительный refresh token");
+
+        // A rejected token never clears the cookie: when two tabs refresh at once the loser's
+        // response may arrive last and would wipe the cookie the winner has just received.
+        var session = await sessionService.RotateAsync(token);
+        RefreshTokenCookie.Set(context, session.RefreshToken, session.ExpiresAt);
+        return new AuthPayload(session.User, session.AccessToken, fromArgument ? session.RefreshToken : null);
     }
 
     [Authorize]
-    public Task<bool> Logout(IHttpContextAccessor httpContextAccessor,
+    public async Task<bool> Logout(IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService, UserSessionService sessionService)
     {
         var principal = httpContextAccessor.HttpContext?.User;
         var userId = equipmentService.GetRequiredUserId(principal);
-        return sessionService.RevokeAsync(userId, UserSessionService.GetRequiredSessionId(principal));
+        var revoked = await sessionService.RevokeAsync(userId, UserSessionService.GetRequiredSessionId(principal));
+        RefreshTokenCookie.Clear(httpContextAccessor.HttpContext);
+        return revoked;
     }
 
     [Authorize]
@@ -82,11 +95,19 @@ public class UserMutation
     }
 
     [Authorize]
-    public Task<bool> LogoutAll(IHttpContextAccessor httpContextAccessor,
+    public async Task<bool> LogoutAll(IHttpContextAccessor httpContextAccessor,
         EquipmentService equipmentService, UserSessionService sessionService)
     {
         var userId = equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User);
-        return sessionService.RevokeAllAsync(userId);
+        var revoked = await sessionService.RevokeAllAsync(userId);
+        RefreshTokenCookie.Clear(httpContextAccessor.HttpContext);
+        return revoked;
+    }
+
+    private static AuthPayload SignIn(HttpContext? context, RefreshedSession session)
+    {
+        RefreshTokenCookie.Set(context, session.RefreshToken, session.ExpiresAt);
+        return new AuthPayload(session.User, session.AccessToken, null);
     }
 
     [Authorize(Roles = ["Admin"])]
@@ -189,10 +210,11 @@ public record LoginInput(
     string Password
 );
 
+// RefreshToken is null unless the caller supplied its own token: see UserMutation.RefreshToken.
 public record AuthPayload(
     User User,
     string AccessToken,
-    string RefreshToken
+    string? RefreshToken
 );
 
 public record TelegramLinkPayload(string Code);

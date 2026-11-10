@@ -206,6 +206,116 @@ public class BookingPaginationTests
     }
 
     [Fact]
+    public async Task EquipmentHistoryIsPagedByMostRecentUseWithSearchAndStatus()
+    {
+        await using var fixture = await Fixture.CreateAsync(25, booking =>
+        {
+            booking.StartTime = new DateTime(2026, 10, 1, 9, 0, 0, DateTimeKind.Utc).AddDays(booking.Id);
+            booking.EndTime = booking.StartTime.AddHours(2);
+            if (booking.Id == 7) booking.Reason = "Интервью с ректором";
+        });
+        // A booking of another unit must not appear in this unit's history.
+        var other = await fixture.Db.Bookings.Include(b => b.BookingItems).SingleAsync(b => b.Id == 25);
+        Assert.Single(other.BookingItems).EqItem = new EqItem
+        {
+            EqModel = new EqModel { Name = "Other camera" }, InventoryNumber = "0-002-01"
+        };
+        await fixture.Db.SaveChangesAsync();
+        var otherItemId = Assert.Single(other.BookingItems).EqItemId;
+        fixture.Db.ChangeTracker.Clear();
+
+        var first = await fixture.Service.GetBookingsPageByEquipmentItemAsync(1);
+        Assert.Equal(24, first.TotalCount);
+        Assert.Equal(10, first.PageSize);
+        Assert.Equal(Enumerable.Range(15, 10).Reverse(), first.Items.Select(b => b.Id));
+
+        var last = await fixture.Service.GetBookingsPageByEquipmentItemAsync(1, page: 99);
+        Assert.Equal(3, last.Page);
+        Assert.Equal(new[] { 4, 3, 2, 1 }, last.Items.Select(b => b.Id));
+
+        var approved = await fixture.Service.GetBookingsPageByEquipmentItemAsync(1, status: BookingStatus.Approved);
+        Assert.Equal(12, approved.TotalCount);
+        Assert.All(approved.Items, b => Assert.Equal(BookingStatus.Approved, b.Status));
+
+        Assert.Equal(7, Assert.Single((await fixture.Service.GetBookingsPageByEquipmentItemAsync(1, search: "ректор")).Items).Id);
+        Assert.Equal(7, Assert.Single((await fixture.Service.GetBookingsPageByEquipmentItemAsync(1, search: " #7 ")).Items).Id);
+        Assert.Equal(25, Assert.Single((await fixture.Service.GetBookingsPageByEquipmentItemAsync(otherItemId)).Items).Id);
+    }
+
+    [Fact]
+    public async Task ListsKeptForOldClientsReturnOnlyTheMostRecentBookings()
+    {
+        await using var fixture = await Fixture.CreateAsync(BookingService.LegacyListLimit + 5, booking =>
+            booking.CreationTime = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc).AddMinutes(booking.Id));
+
+        var expected = Enumerable.Range(6, BookingService.LegacyListLimit).Reverse().ToList();
+        Assert.Equal(expected, (await fixture.Service.GetAllBookingsAsync()).Select(b => b.Id));
+        Assert.Equal(expected, (await fixture.Service.GetBookingsByEquipmentItemAsync(1)).Select(b => b.Id));
+        // Odd bookings belong to the first owner; a shorter list is still newest first.
+        Assert.Equal(Enumerable.Range(1, BookingService.LegacyListLimit + 5).Where(id => id % 2 == 1).Reverse(),
+            (await fixture.Service.GetBookingsByUserAsync(1)).Select(b => b.Id));
+    }
+
+    [Fact]
+    public async Task CalendarRequiresABoundedPeriod()
+    {
+        await using var fixture = await Fixture.CreateAsync(1);
+        var start = new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Service.GetCalendarBookingsAsync());
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Service.GetCalendarBookingsAsync(start, null));
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Service.GetCalendarBookingsAsync(null, start));
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Service.GetCalendarBookingsAsync(start, start));
+        await Assert.ThrowsAsync<GraphQLException>(() =>
+            fixture.Service.GetCalendarBookingsAsync(start, start.AddDays(BookingService.CalendarMaxDays + 1)));
+
+        // The widest allowed period, which is far more than the six weeks a month view shows.
+        await fixture.Service.GetCalendarBookingsAsync(start, start.AddDays(BookingService.CalendarMaxDays));
+    }
+
+    [Fact]
+    public async Task UsersArePagedWithSearchGroupsAndCountsForEveryGroup()
+    {
+        await using var fixture = await Fixture.CreateAsync(0);
+        fixture.Db.Users.AddRange(
+            new User { Id = 10, Name = "Анна Админ", Login = "anna", Role = UserRole.Admin },
+            new User { Id = 11, Name = "Борис Основа", Login = "boris", Role = UserRole.Osnova, TelegramUsername = "Boris_TG" },
+            new User { Id = 12, Name = "Вера Ронин", Login = "vera", Role = UserRole.Ronin },
+            new User { Id = 13, Name = "Глеб Малыш", Login = "gleb", Role = UserRole.User },
+            new User { Id = 14, Name = "Дина Бан", Login = "dina", Role = UserRole.Admin, Banned = true });
+        for (var id = 100; id < 100 + UserService.UsersPageSize; id++)
+            fixture.Db.Users.Add(new User { Id = id, Name = $"User {id}", Login = $"login{id}" });
+        await fixture.Db.SaveChangesAsync();
+        fixture.Db.ChangeTracker.Clear();
+        var users = new UserService(fixture.Db);
+
+        var all = await users.GetUsersPageAsync();
+        Assert.Equal(UserService.UsersPageSize + 5, all.TotalCount);
+        Assert.Equal(UserService.UsersPageSize, all.Items.Count);
+        Assert.Equal(new UserGroupCounts(UserService.UsersPageSize + 5, 1, 2, UserService.UsersPageSize + 1, 1), all.Counts);
+        Assert.Equal(5, (await users.GetUsersPageAsync(page: 2)).Items.Count);
+        Assert.Equal(2, (await users.GetUsersPageAsync(page: 99)).Page);
+
+        // A banned administrator is listed as banned, not as an administrator.
+        Assert.Equal(new[] { 10 }, (await users.GetUsersPageAsync(group: UserListGroup.Admins)).Items.Select(u => u.Id));
+        Assert.Equal(new[] { 14 }, (await users.GetUsersPageAsync(group: UserListGroup.Banned)).Items.Select(u => u.Id));
+        Assert.Equal(new[] { 11, 12 }, (await users.GetUsersPageAsync(group: UserListGroup.Osnova)).Items.Select(u => u.Id).Order());
+        Assert.Equal(UserService.UsersPageSize + 1, (await users.GetUsersPageAsync(group: UserListGroup.Users)).TotalCount);
+
+        // Search covers the login and the Telegram name, and does not change the group counts.
+        var byTelegram = await users.GetUsersPageAsync(search: " @boris_tg ");
+        Assert.Equal(11, Assert.Single(byTelegram.Items).Id);
+        Assert.Equal(all.Counts, byTelegram.Counts);
+        Assert.Equal(13, Assert.Single((await users.GetUsersPageAsync(search: "GLEB")).Items).Id);
+        Assert.Empty((await users.GetUsersPageAsync(search: "gleb", group: UserListGroup.Admins)).Items);
+
+        var ascending = (await users.GetUsersPageAsync(search: "login10")).Items.Select(u => u.Id).ToList();
+        var descending = (await users.GetUsersPageAsync(search: "login10", descending: true)).Items.Select(u => u.Id).ToList();
+        Assert.Equal(Enumerable.Range(100, 10), ascending);
+        Assert.Equal(ascending.AsEnumerable().Reverse(), descending);
+    }
+
+    [Fact]
     public async Task GraphqlSchemaHasFixedPagePayloadDefaultsAndCorrectAuthorization()
     {
         var services = new ServiceCollection();
@@ -249,8 +359,18 @@ public class BookingPaginationTests
         Assert.Equal(new[] { "Admin" }, allAuth.Roles);
         var mineAuth = Assert.Single(mine.Directives, d => d.Type.Name == "authorize").AsValue<AuthorizeDirective>();
         Assert.True(mineAuth.Roles is null or { Count: 0 });
-        Assert.Contains(executor.Schema.QueryType.Fields, f => f.Name == "allBookings");
-        Assert.Contains(executor.Schema.QueryType.Fields, f => f.Name == "myBookings");
+        // The unpaginated lists stay for old clients, marked as deprecated.
+        foreach (var name in new[] { "allBookings", "myBookings", "bookingsByUser", "bookingsByEquipmentItem" })
+            Assert.True(executor.Schema.QueryType.Fields[name].IsDeprecated, name);
+
+        var history = executor.Schema.QueryType.Fields["bookingsPageByEquipmentItem"];
+        Assert.Equal("Int!", FormatType(history.Arguments["equipmentItemId"].Type));
+        Assert.Equal("1", history.Arguments["page"].DefaultValue!.ToString());
+        Assert.Equal("String", FormatType(history.Arguments["search"].Type));
+        Assert.Equal("BookingStatus", FormatType(history.Arguments["status"].Type));
+        Assert.Same(payload, history.Type.NamedType());
+        var historyAuth = Assert.Single(history.Directives, d => d.Type.Name == "authorize").AsValue<AuthorizeDirective>();
+        Assert.Equal(new[] { "Admin" }, historyAuth.Roles);
     }
 
     private static string FormatType(IType type) => type switch

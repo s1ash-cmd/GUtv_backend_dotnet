@@ -7,14 +7,18 @@ namespace GUtv_backend_dotnet.Services;
 
 public class CartService(AppDbContext db, BookingService bookingService)
 {
+    // Returned when an operation would discard what the cart holds. The client asks the
+    // user and repeats the call with replaceCart: true.
+    public const string ReplaceRequiredCode = "CART_REPLACE_REQUIRED";
+
     public Task<Cart> GetOrCreateCartAsync(int userId) =>
         WithCartLockAsync(userId, () => GetOrCreateCartCoreAsync(userId));
 
     public Task<Cart> SetCartDetailsAsync(int userId, UpdateCartDetailsInput input) =>
         WithCartLockAsync(userId, () => SetCartDetailsCoreAsync(userId, input));
 
-    public Task<Cart> AddCartItemAsync(int userId, int eqModelId, int quantity, int? selectedItemId = null) =>
-        WithCartLockAsync(userId, () => AddCartItemCoreAsync(userId, eqModelId, quantity, selectedItemId));
+    public Task<Cart> AddCartItemAsync(int userId, int eqModelId, int? selectedItemId = null) =>
+        WithCartLockAsync(userId, () => AddCartItemCoreAsync(userId, eqModelId, selectedItemId));
 
     public Task<Cart> SetCartItemSelectionAsync(int userId, int eqModelId, int[] selectedItemIds) =>
         WithCartLockAsync(userId, () => SetCartItemSelectionCoreAsync(userId, eqModelId, selectedItemIds));
@@ -28,7 +32,8 @@ public class CartService(AppDbContext db, BookingService bookingService)
         var cart = await db.Carts.AsNoTracking().FirstOrDefaultAsync(c => c.UserId == userId);
         // Editing may reuse its own assignments. The edit target is set only after checking access.
         var excludedBookingId = cart?.EditingBookingId;
-        var options = await db.EqItems.AsNoTracking().Where(item => item.EqModelId == eqModelId)
+        var options = await db.EqItems.AsNoTracking()
+            .Where(item => item.EqModelId == eqModelId && item.ArchivedAt == null)
             .OrderBy(item => item.InventoryNumber).ThenBy(item => item.Id)
             .Select(item => new { item.Id, item.InventoryNumber, item.Operable }).ToListAsync();
         var availableIds = start.HasValue
@@ -48,11 +53,11 @@ public class CartService(AppDbContext db, BookingService bookingService)
     public Task<bool> ClearCartAsync(int userId) =>
         WithCartLockAsync(userId, () => ClearCartCoreAsync(userId));
 
-    public Task<Cart> AddBookingItemsToCartAsync(int userId, int bookingId) =>
-        WithCartLockAsync(userId, () => AddBookingItemsToCartCoreAsync(userId, bookingId));
+    public Task<Cart> AddBookingItemsToCartAsync(int userId, int bookingId, bool replaceCart = false) =>
+        WithCartLockAsync(userId, () => AddBookingItemsToCartCoreAsync(userId, bookingId, replaceCart));
 
-    public Task<Cart> PrepareBookingEditAsync(int userId, int bookingId, bool isAdmin) =>
-        WithCartLockAsync(userId, () => PrepareBookingEditCoreAsync(userId, bookingId, isAdmin));
+    public Task<Cart> PrepareBookingEditAsync(int userId, int bookingId, bool isAdmin, bool replaceCart = false) =>
+        WithCartLockAsync(userId, () => PrepareBookingEditCoreAsync(userId, bookingId, isAdmin, replaceCart));
 
     public async Task<Booking> CreateBookingFromCartAsync(int userId)
     {
@@ -118,25 +123,29 @@ public class CartService(AppDbContext db, BookingService bookingService)
 
     private async Task<Cart> SetCartDetailsCoreAsync(int userId, UpdateCartDetailsInput input)
     {
-        if (input.StartTime.HasValue && input.EndTime.HasValue && input.StartTime >= input.EndTime)
+        var cart = await GetCartTrackedAsync(userId);
+
+        // An omitted field keeps its value; an explicit null clears it.
+        var startTime = input.StartTime.HasValue ? input.StartTime.Value : cart.StartTime;
+        var endTime = input.EndTime.HasValue ? input.EndTime.Value : cart.EndTime;
+        if (startTime.HasValue && endTime.HasValue && startTime >= endTime)
             throw new GraphQLException("Дата начала должна быть раньше даты окончания");
 
-        var cart = await GetCartTrackedAsync(userId);
-        cart.Reason = input.Reason?.Trim() ?? cart.Reason;
-        cart.StartTime = input.StartTime ?? cart.StartTime;
-        cart.EndTime = input.EndTime ?? cart.EndTime;
-        cart.Comment = input.Comment ?? cart.Comment;
+        if (input.Reason.HasValue)
+            cart.Reason = input.Reason.Value?.Trim() ?? "";
+        if (input.Comment.HasValue)
+            cart.Comment = string.IsNullOrWhiteSpace(input.Comment.Value) ? null : input.Comment.Value;
+        cart.StartTime = startTime;
+        cart.EndTime = endTime;
         cart.UpdatedAt = DateTime.UtcNow;
 
         await db.SaveChangesAsync();
         return await GetOrCreateCartCoreAsync(userId);
     }
 
-    private async Task<Cart> AddCartItemCoreAsync(int userId, int eqModelId, int quantity, int? selectedItemId)
+    // The quantity of a cart position always equals the number of selected units.
+    private async Task<Cart> AddCartItemCoreAsync(int userId, int eqModelId, int? selectedItemId)
     {
-        if (quantity <= 0)
-            throw new GraphQLException("Количество должно быть больше 0");
-
         var cart = await GetCartTrackedAsync(userId);
         var eqModel = await db.EqModels.FindAsync(eqModelId)
             ?? throw new GraphQLException("Модель оборудования не найдена");
@@ -191,7 +200,8 @@ public class CartService(AppDbContext db, BookingService bookingService)
             throw new GraphQLException("Выберите разные инвентарные номера, не больше указанного количества оборудования");
         if (selectedIds.Length == 0) return;
         var items = await db.EqItems.AsNoTracking()
-            .Where(item => item.EqModelId == eqModelId && selectedIds.Contains(item.Id)).ToListAsync();
+            .Where(item => item.EqModelId == eqModelId && item.ArchivedAt == null &&
+                           selectedIds.Contains(item.Id)).ToListAsync();
         if (items.Count != selectedIds.Length)
             throw new GraphQLException("Выбранный экземпляр не найден или не относится к этой модели");
         var faulty = items.FirstOrDefault(item => !item.Operable);
@@ -247,10 +257,17 @@ public class CartService(AppDbContext db, BookingService bookingService)
         return true;
     }
 
-    private async Task<Cart> AddBookingItemsToCartCoreAsync(int userId, int bookingId)
+    private async Task<Cart> AddBookingItemsToCartCoreAsync(int userId, int bookingId, bool replaceCart)
     {
         var booking = await GetOwnedBookingAsync(userId, bookingId);
         var cart = await GetCartTrackedAsync(userId);
+
+        // Items are normally added to what the cart holds. An edit in progress is a different
+        // booking's draft, and it is only dropped when the user agreed to that.
+        if (cart.EditingBookingId.HasValue && !replaceCart)
+            throw ReplaceRequired(
+                $"Сейчас в корзине изменение бронирования #{cart.EditingBookingId}. " +
+                "Несохранённые изменения будут потеряны.");
 
         if (cart.EditingBookingId.HasValue)
         {
@@ -292,7 +309,7 @@ public class CartService(AppDbContext db, BookingService bookingService)
         return await GetOrCreateCartCoreAsync(userId);
     }
 
-    private async Task<Cart> PrepareBookingEditCoreAsync(int userId, int bookingId, bool isAdmin)
+    private async Task<Cart> PrepareBookingEditCoreAsync(int userId, int bookingId, bool isAdmin, bool replaceCart)
     {
         var booking = await GetBookingForCartAsync(
             userId,
@@ -300,6 +317,20 @@ public class CartService(AppDbContext db, BookingService bookingService)
             requireEditable: true,
             allowAdmin: isAdmin);
         var cart = await GetCartTrackedAsync(userId);
+
+        if (!replaceCart)
+        {
+            // Opening the same booking again continues the edit instead of restarting it.
+            if (cart.EditingBookingId == bookingId)
+                return await GetOrCreateCartCoreAsync(userId);
+            if (cart.EditingBookingId.HasValue)
+                throw ReplaceRequired(
+                    $"Сейчас в корзине изменение бронирования #{cart.EditingBookingId}. " +
+                    "Несохранённые изменения будут потеряны.");
+            if (cart.Items.Count > 0)
+                throw ReplaceRequired(
+                    "В корзине уже есть оборудование. Для изменения бронирования корзина будет заменена.");
+        }
 
         db.CartItems.RemoveRange(cart.Items);
         foreach (var group in booking.BookingItems.GroupBy(item => item.EqItem.EqModelId))
@@ -378,6 +409,9 @@ public class CartService(AppDbContext db, BookingService bookingService)
         return booking;
     }
 
+    private static GraphQLException ReplaceRequired(string message) =>
+        new(ErrorBuilder.New().SetMessage(message).SetCode(ReplaceRequiredCode).Build());
+
     private async Task<Booking> GetOwnedBookingAsync(int userId, int bookingId)
     {
         return await GetBookingForCartAsync(userId, bookingId);
@@ -425,11 +459,12 @@ public class CartService(AppDbContext db, BookingService bookingService)
     }
 }
 
+// Optional distinguishes "leave this field alone" (omitted) from "clear it" (null).
 public record UpdateCartDetailsInput(
-    string? Reason,
-    DateTime? StartTime,
-    DateTime? EndTime,
-    string? Comment
+    Optional<string?> Reason = default,
+    Optional<DateTime?> StartTime = default,
+    Optional<DateTime?> EndTime = default,
+    Optional<string?> Comment = default
 );
 
 public record CartEquipmentOption(int Id, string InventoryNumber, bool Operable, bool? Available);

@@ -23,7 +23,7 @@ public class StartCommand(UserService userService, RequestRateLimiter rateLimite
             var code = startParameter["LINK_".Length..];
             if (code.Length == 6 && code.All(char.IsDigit))
             {
-                logger.LogInformation("Telegram autolink attempt. ChatId: {ChatId}, Code: {Code}", chatId, code);
+                logger.LogInformation("Telegram autolink attempt. ChatId: {ChatId}", chatId);
                 await LinkByCode(botClient, message, code, cancellationToken);
                 return;
             }
@@ -79,7 +79,7 @@ public class StartCommand(UserService userService, RequestRateLimiter rateLimite
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Telegram autolink failed. ChatId: {ChatId}, Code: {Code}", chatId, code);
+            logger.LogError(ex, "Telegram autolink failed. ChatId: {ChatId}", chatId);
             await botClient.SendMessage(
                 chatId: chatId,
                 text: "Произошла ошибка при привязке аккаунта. Попробуйте вручную: /link КОД",
