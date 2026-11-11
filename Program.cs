@@ -11,6 +11,7 @@ using Microsoft.IdentityModel.Tokens;
 using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
+LoggingDefaults.Apply(builder.Logging, builder.Configuration);
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
