@@ -437,6 +437,43 @@ public class BookingService(
         return updatedBooking;
     }
 
+    // Removes the booking and its items for good, unlike cancellation which keeps the record.
+    public async Task<bool> DeleteBookingAsync(int bookingId, int expectedRevision, int actorUserId)
+    {
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await AcquireAdvisoryLockAsync(2, bookingId);
+
+        var booking = await db.Bookings
+            .Include(b => b.BookingItems)
+            .FirstOrDefaultAsync(b => b.Id == bookingId)
+            ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
+
+        await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
+        EnsureRevision(booking, expectedRevision);
+
+        // A cart editing this booking would otherwise keep a draft that can never be saved.
+        var editingCarts = await db.Carts
+            .Include(c => c.Items)
+            .Where(c => c.EditingBookingId == bookingId)
+            .ToListAsync();
+        foreach (var cart in editingCarts)
+        {
+            db.CartItems.RemoveRange(cart.Items);
+            cart.Reason = "";
+            cart.StartTime = null;
+            cart.EndTime = null;
+            cart.Comment = null;
+            cart.EditingBookingId = null;
+            cart.UpdatedAt = DateTime.UtcNow;
+        }
+
+        db.BookingItems.RemoveRange(booking.BookingItems);
+        db.Bookings.Remove(booking);
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        return true;
+    }
+
     public string GetWarningsJson(Booking booking)
     {
         return string.IsNullOrWhiteSpace(booking.WarningsJson) ? "{}" : booking.WarningsJson;

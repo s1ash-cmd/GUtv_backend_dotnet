@@ -89,6 +89,16 @@ public class BookingMutations
         bookingService.CompleteBookingAsync(id, expectedRevision,
             equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User));
 
+    [Authorize(Roles = ["Admin"])]
+    public Task<bool> DeleteBooking(
+        int id,
+        int expectedRevision,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        BookingService bookingService) =>
+        bookingService.DeleteBookingAsync(id, expectedRevision,
+            equipmentService.GetRequiredUserId(httpContextAccessor.HttpContext?.User));
+
     [Authorize]
     public async Task<Booking> CancelBooking(
         int id,

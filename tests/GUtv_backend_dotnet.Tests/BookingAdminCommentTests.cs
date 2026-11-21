@@ -293,6 +293,38 @@ public class BookingAdminCommentTests
     }
 
     [Fact]
+    public async Task AdminDeleteRemovesBookingItemsAndEditingCartDraft()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await EditBooking(fixture);
+        using var scope = fixture.Provider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var service = scope.ServiceProvider.GetRequiredService<BookingService>();
+        db.Carts.Add(new Cart
+        {
+            UserId = 1, Reason = "Draft", EditingBookingId = 1,
+            Items = [new CartItem { EqModelId = 1, Quantity = 1, SelectedItemIds = [1] }]
+        });
+        await db.SaveChangesAsync();
+
+        // Only a current administrator may delete, and only the revision they saw.
+        await Assert.ThrowsAsync<HotChocolate.GraphQLException>(() => service.DeleteBookingAsync(1, 2, 1));
+        var stale = await Assert.ThrowsAsync<HotChocolate.GraphQLException>(() => service.DeleteBookingAsync(1, 1, 2));
+        Assert.Contains(stale.Errors, item => item.Code == "BOOKING_CHANGED");
+        Assert.Equal(1, await db.Bookings.CountAsync());
+
+        Assert.True(await service.DeleteBookingAsync(1, 2, 2));
+
+        db.ChangeTracker.Clear();
+        Assert.False(await db.Bookings.AnyAsync());
+        Assert.False(await db.BookingItems.AnyAsync());
+        var cart = await db.Carts.Include(c => c.Items).SingleAsync();
+        Assert.Null(cart.EditingBookingId);
+        Assert.Empty(cart.Items);
+        await Assert.ThrowsAsync<HotChocolate.GraphQLException>(() => service.DeleteBookingAsync(1, 2, 2));
+    }
+
+    [Fact]
     public async Task GraphqlBookingEquipmentUsesRequiredModelIds()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -320,7 +352,7 @@ public class BookingAdminCommentTests
     {
         await using var fixture = await Fixture.CreateAsync();
         var executor = await fixture.Provider.GetRequiredService<IRequestExecutorResolver>().GetRequestExecutorAsync();
-        foreach (var name in new[] { "approveBooking", "rejectBooking", "completeBooking", "cancelBooking" })
+        foreach (var name in new[] { "approveBooking", "rejectBooking", "completeBooking", "cancelBooking", "deleteBooking" })
         {
             var argument = executor.Schema.MutationType!.Fields[name].Arguments["expectedRevision"];
             Assert.IsType<NonNullType>(argument.Type);
