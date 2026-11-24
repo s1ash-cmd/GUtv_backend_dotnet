@@ -212,6 +212,51 @@ public class BookingAllocationTests
     }
 
     [Fact]
+    public async Task EquipmentHistoryTracksEditorAndInventoryAcrossDirectAndCartEdits()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var booking = await fixture.Bookings.CreateBookingAsync(Input(new CreateBookingEquipmentInput(1, 1, [1])), 1);
+        Assert.Empty(await fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 1, false));
+
+        var beforeEdit = DateTime.UtcNow;
+        var ownerEdit = await fixture.Bookings.UpdateBookingAsync(
+            booking.Id, Input(new CreateBookingEquipmentInput(1, 1, [2])), 1, false);
+
+        await fixture.Carts.PrepareBookingEditAsync(2, booking.Id, true);
+        await fixture.Carts.SetCartItemSelectionAsync(2, 1, [1, 2]);
+        var adminEdit = await fixture.Carts.UpdateBookingFromCartAsync(2, booking.Id, true);
+
+        var later = Input(new CreateBookingEquipmentInput(1, 2, [2, 1])) with { EndTime = Start.AddHours(3) };
+        await fixture.Bookings.UpdateBookingAsync(booking.Id, later, 1, false);
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.UpdateBookingAsync(
+            booking.Id, Input(new CreateBookingEquipmentInput(1, 1, [999])), 1, false));
+
+        var model = (await fixture.Db.EqModels.FindAsync(1))!;
+        model.Name = "New camera name";
+        await fixture.Db.SaveChangesAsync();
+
+        var history = await fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 1, false);
+        Assert.Collection(history, adminChange =>
+        {
+            Assert.Equal(adminEdit.Revision, adminChange.Revision);
+            Assert.Equal("Admin", adminChange.ActorName);
+            Assert.Equal(new BookingEquipmentSnapshot(1, "Camera", "CAM-1"), Assert.Single(adminChange.Added));
+            Assert.Empty(adminChange.Removed);
+            Assert.InRange(adminChange.ChangedAt, beforeEdit, DateTime.UtcNow);
+        }, ownerChange =>
+        {
+            Assert.Equal(ownerEdit.Revision, ownerChange.Revision);
+            Assert.Equal("Owner", ownerChange.ActorName);
+            Assert.Equal(new BookingEquipmentSnapshot(2, "Camera", "CAM-2"), Assert.Single(ownerChange.Added));
+            Assert.Equal(new BookingEquipmentSnapshot(1, "Camera", "CAM-1"), Assert.Single(ownerChange.Removed));
+            Assert.InRange(ownerChange.ChangedAt, beforeEdit, DateTime.UtcNow);
+        });
+
+        Assert.Equal(2, (await fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 2, true)).Count);
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 2, false));
+    }
+
+    [Fact]
     public async Task ModelIdsSurviveRenamesAndDisambiguateIdenticalNames()
     {
         await using var fixture = await Fixture.CreateAsync();

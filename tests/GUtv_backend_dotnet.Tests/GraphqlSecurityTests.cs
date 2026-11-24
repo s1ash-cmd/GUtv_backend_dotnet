@@ -41,7 +41,8 @@ public class GraphqlSecurityTests
 
         Assert.Contains("EqModel", reachable);
         Assert.Contains("EqItem", reachable);
-        foreach (var name in new[] { "User", "Booking", "BookingItem", "Cart", "CartItem", "UserSession" })
+        foreach (var name in new[] { "User", "Booking", "BookingItem", "Cart", "CartItem", "UserSession",
+                     "BookingEquipmentChangePayload", "BookingEquipmentSnapshot" })
             Assert.DoesNotContain(name, reachable);
     }
 

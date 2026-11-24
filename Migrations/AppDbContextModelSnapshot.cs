@@ -142,6 +142,33 @@ namespace GUtv_backend_dotnet.Migrations
                     b.ToTable("Bookings");
                 });
 
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.BookingEquipmentChange", b =>
+                {
+                    b.Property<int>("BookingId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Revision")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("ActorName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("ActorUserId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EquipmentJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("BookingId", "Revision");
+
+                    b.ToTable("BookingEquipmentChanges");
+                });
+
             modelBuilder.Entity("GUtv_backend_dotnet.Models.BookingItem", b =>
                 {
                     b.Property<int>("Id")
@@ -459,6 +486,15 @@ namespace GUtv_backend_dotnet.Migrations
                         .IsRequired();
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("GUtv_backend_dotnet.Models.BookingEquipmentChange", b =>
+                {
+                    b.HasOne("GUtv_backend_dotnet.Models.Booking", null)
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("GUtv_backend_dotnet.Models.BookingItem", b =>

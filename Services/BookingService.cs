@@ -101,7 +101,7 @@ public class BookingService(
         bool isAdmin)
     {
         RequireTransaction();
-        await EnsureCanBookAsync(actorUserId);
+        var actor = await EnsureCanBookAsync(actorUserId);
         await AcquireAdvisoryLockAsync(2, bookingId);
 
         var booking = await db.Bookings
@@ -120,6 +120,7 @@ public class BookingService(
         ValidateBookingInput(input);
 
         var allocation = await AllocateEquipmentAsync(input, bookingUser, isAdmin, bookingId);
+        await RecordEquipmentChangeAsync(booking, allocation.Items, actor);
 
         db.BookingItems.RemoveRange(booking.BookingItems);
         booking.BookingItems = allocation.Items;
@@ -135,6 +136,37 @@ public class BookingService(
         await db.SaveChangesAsync();
         return await GetBookingEntityByIdAsync(booking.Id);
     }
+
+    private async Task RecordEquipmentChangeAsync(Booking booking, List<BookingItem> newItems, User actor)
+    {
+        var previousIds = booking.BookingItems.Select(item => item.EqItemId).ToHashSet();
+        var currentIds = newItems.Select(item => item.EqItemId).ToHashSet();
+        var changedIds = previousIds.ToHashSet();
+        changedIds.SymmetricExceptWith(currentIds);
+        if (changedIds.Count == 0)
+            return;
+
+        var snapshots = await db.EqItems.AsNoTracking()
+            .Where(item => changedIds.Contains(item.Id))
+            .OrderBy(item => item.EqModel.Name).ThenBy(item => item.InventoryNumber)
+            .Select(item => new BookingEquipmentSnapshot(item.Id, item.EqModel.Name, item.InventoryNumber))
+            .ToListAsync();
+
+        db.BookingEquipmentChanges.Add(new BookingEquipmentChange
+        {
+            BookingId = booking.Id,
+            Revision = booking.Revision + 1,
+            ActorUserId = actor.Id,
+            ActorName = string.IsNullOrWhiteSpace(actor.Name) ? actor.Login : actor.Name,
+            ChangedAt = DateTime.UtcNow,
+            EquipmentJson = JsonSerializer.Serialize(new EquipmentChangeDetails(
+                snapshots.Where(item => currentIds.Contains(item.EqItemId)).ToArray(),
+                snapshots.Where(item => previousIds.Contains(item.EqItemId)).ToArray()))
+        });
+    }
+
+    private sealed record EquipmentChangeDetails(
+        BookingEquipmentSnapshot[] Added, BookingEquipmentSnapshot[] Removed);
 
     internal Task NotifyBookingCreatedAsync(Booking booking) =>
         DispatchNotificationAsync(async (notifications, cancellationToken) =>
@@ -179,13 +211,38 @@ public class BookingService(
         var booking = await FindBookingWithIncludes().FirstOrDefaultAsync(b => b.Id == id)
             ?? throw new GraphQLException($"Бронирование с ID {id} не найдено");
 
-        if (!isAdmin && booking.UserId != currentUserId)
-            throw new GraphQLException("Вы не можете просматривать чужое бронирование");
+        EnsureCanViewBooking(booking.UserId, currentUserId, isAdmin);
 
         if (booking.BookingItems.Count == 0)
             throw new GraphQLException("У бронирования нет связанных элементов оборудования");
 
         return booking;
+    }
+
+    public async Task<List<BookingEquipmentChangePayload>> GetBookingEquipmentHistoryAsync(int id, int currentUserId, bool isAdmin)
+    {
+        var ownerId = await db.Bookings.Where(booking => booking.Id == id)
+            .Select(booking => (int?)booking.UserId).SingleOrDefaultAsync()
+            ?? throw new GraphQLException($"Бронирование с ID {id} не найдено");
+        EnsureCanViewBooking(ownerId, currentUserId, isAdmin);
+
+        var changes = await db.BookingEquipmentChanges.AsNoTracking()
+            .Where(change => change.BookingId == id)
+            .OrderByDescending(change => change.Revision)
+            .ToListAsync();
+
+        return changes.Select(change =>
+        {
+            var equipment = JsonSerializer.Deserialize<EquipmentChangeDetails>(change.EquipmentJson)!;
+            return new BookingEquipmentChangePayload(
+                change.Revision, change.ActorName, change.ChangedAt, equipment.Added, equipment.Removed);
+        }).ToList();
+    }
+
+    private static void EnsureCanViewBooking(int ownerId, int currentUserId, bool isAdmin)
+    {
+        if (!isAdmin && ownerId != currentUserId)
+            throw new GraphQLException("Вы не можете просматривать чужое бронирование");
     }
 
     public async Task<List<Booking>> GetBookingsByUserAsync(int userId)

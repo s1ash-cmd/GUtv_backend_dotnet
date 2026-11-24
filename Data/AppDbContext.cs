@@ -11,6 +11,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<EqItem> EqItems => Set<EqItem>();
     public DbSet<Booking> Bookings => Set<Booking>();
     public DbSet<BookingItem> BookingItems => Set<BookingItem>();
+    public DbSet<BookingEquipmentChange> BookingEquipmentChanges => Set<BookingEquipmentChange>();
     public DbSet<EqPhoto> EqPhotos => Set<EqPhoto>();
     public DbSet<Cart> Carts => Set<Cart>();
     public DbSet<CartItem> CartItems => Set<CartItem>();
@@ -32,6 +33,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasForeignKey(s => s.UserId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Booking>().Property(b => b.Revision).HasDefaultValue(1).IsConcurrencyToken();
+
+        modelBuilder.Entity<BookingEquipmentChange>().HasKey(change => new { change.BookingId, change.Revision });
+        modelBuilder.Entity<BookingEquipmentChange>().HasOne<Booking>().WithMany()
+            .HasForeignKey(change => change.BookingId).OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Announcement>().HasIndex(a => a.RequestId).IsUnique();
         modelBuilder.Entity<Announcement>().Property(a => a.Title).HasMaxLength(100);

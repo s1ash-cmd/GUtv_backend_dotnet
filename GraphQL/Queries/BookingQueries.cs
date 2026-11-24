@@ -21,6 +21,19 @@ public class BookingQueries
         return bookingService.GetBookingByIdAsync(id, userId, isAdmin);
     }
 
+    [Authorize]
+    public Task<List<BookingEquipmentChangePayload>> GetBookingEquipmentHistory(
+        int id,
+        IHttpContextAccessor httpContextAccessor,
+        EquipmentService equipmentService,
+        BookingService bookingService)
+    {
+        var httpUser = httpContextAccessor.HttpContext?.User;
+        var userId = equipmentService.GetRequiredUserId(httpUser);
+        var isAdmin = httpUser?.IsInRole("Admin") ?? false;
+        return bookingService.GetBookingEquipmentHistoryAsync(id, userId, isAdmin);
+    }
+
     private const string LegacyList =
         "Возвращает не больше 200 последних бронирований. Используйте постраничный запрос.";
 
