@@ -42,7 +42,7 @@ public class GraphqlSecurityTests
         Assert.Contains("EqModel", reachable);
         Assert.Contains("EqItem", reachable);
         foreach (var name in new[] { "User", "Booking", "BookingItem", "Cart", "CartItem", "UserSession",
-                     "BookingEquipmentChangePayload", "BookingEquipmentSnapshot" })
+                     "BookingEquipmentChangePayload", "BookingEquipmentSnapshot", "BookingChangePayload", "BookingFieldChange" })
             Assert.DoesNotContain(name, reachable);
     }
 
@@ -143,6 +143,12 @@ public class GraphqlSecurityTests
         Assert.True(schema.QueryType.Fields["users"].IsDeprecated);
         // The archive marker is internal: the catalogue simply stops listing such units.
         Assert.DoesNotContain(schema.GetType<ObjectType>("EqItem").Fields, field => field.Name == "archivedAt");
+
+        var history = schema.QueryType.Fields["bookingHistory"];
+        Assert.Equal("[BookingChangePayload!]!", Format(history.Type));
+        Assert.Single(history.Directives, directive => directive.Type.Name == "authorize");
+        Assert.Equal(new[] { "ADMIN_COMMENT", "COMMENT", "END_TIME", "REASON", "START_TIME", "STATUS" },
+            schema.GetType<EnumType>("BookingHistoryField").Values.Select(value => value.Name).Order());
     }
 
     [Fact]

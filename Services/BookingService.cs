@@ -120,7 +120,8 @@ public class BookingService(
         ValidateBookingInput(input);
 
         var allocation = await AllocateEquipmentAsync(input, bookingUser, isAdmin, bookingId);
-        await RecordEquipmentChangeAsync(booking, allocation.Items, actor);
+        var equipment = await GetEquipmentChangesAsync(booking.BookingItems, allocation.Items);
+        var before = GetHistoryValues(booking);
 
         db.BookingItems.RemoveRange(booking.BookingItems);
         booking.BookingItems = allocation.Items;
@@ -132,19 +133,21 @@ public class BookingService(
         booking.Revision++;
         booking.Status = BookingStatus.Pending;
         booking.WarningsJson = SerializeWarnings(allocation.Warnings);
+        RecordBookingChange(booking, actor, before, equipment);
 
         await db.SaveChangesAsync();
         return await GetBookingEntityByIdAsync(booking.Id);
     }
 
-    private async Task RecordEquipmentChangeAsync(Booking booking, List<BookingItem> newItems, User actor)
+    private async Task<EquipmentChangeDetails> GetEquipmentChangesAsync(
+        List<BookingItem> oldItems, List<BookingItem> newItems)
     {
-        var previousIds = booking.BookingItems.Select(item => item.EqItemId).ToHashSet();
+        var previousIds = oldItems.Select(item => item.EqItemId).ToHashSet();
         var currentIds = newItems.Select(item => item.EqItemId).ToHashSet();
         var changedIds = previousIds.ToHashSet();
         changedIds.SymmetricExceptWith(currentIds);
         if (changedIds.Count == 0)
-            return;
+            return new([], []);
 
         var snapshots = await db.EqItems.AsNoTracking()
             .Where(item => changedIds.Contains(item.Id))
@@ -152,21 +155,50 @@ public class BookingService(
             .Select(item => new BookingEquipmentSnapshot(item.Id, item.EqModel.Name, item.InventoryNumber))
             .ToListAsync();
 
+        return new(
+            snapshots.Where(item => currentIds.Contains(item.EqItemId)).ToArray(),
+            snapshots.Where(item => previousIds.Contains(item.EqItemId)).ToArray());
+    }
+
+    private static Dictionary<BookingHistoryField, string?> GetHistoryValues(Booking booking) => new()
+    {
+        [BookingHistoryField.StartTime] = DateTime.SpecifyKind(booking.StartTime, DateTimeKind.Utc).ToString("O"),
+        [BookingHistoryField.EndTime] = DateTime.SpecifyKind(booking.EndTime, DateTimeKind.Utc).ToString("O"),
+        [BookingHistoryField.Reason] = booking.Reason,
+        [BookingHistoryField.Comment] = booking.Comment,
+        [BookingHistoryField.AdminComment] = booking.AdminComment,
+        [BookingHistoryField.Status] = booking.Status.ToString()
+    };
+
+    private void RecordBookingChange(
+        Booking booking, User actor, Dictionary<BookingHistoryField, string?> before,
+        EquipmentChangeDetails? equipment = null)
+    {
+        var fields = GetHistoryValues(booking)
+            .Where(value => value.Value != before[value.Key])
+            .Select(value => new BookingFieldChange(value.Key, before[value.Key], value.Value))
+            .ToArray();
+        equipment ??= new([], []);
+        if (fields.Length == 0 && equipment.Added.Length == 0 && equipment.Removed.Length == 0)
+            return;
+
         db.BookingEquipmentChanges.Add(new BookingEquipmentChange
         {
             BookingId = booking.Id,
-            Revision = booking.Revision + 1,
+            Revision = booking.Revision,
             ActorUserId = actor.Id,
             ActorName = string.IsNullOrWhiteSpace(actor.Name) ? actor.Login : actor.Name,
             ChangedAt = DateTime.UtcNow,
-            EquipmentJson = JsonSerializer.Serialize(new EquipmentChangeDetails(
-                snapshots.Where(item => currentIds.Contains(item.EqItemId)).ToArray(),
-                snapshots.Where(item => previousIds.Contains(item.EqItemId)).ToArray()))
+            EquipmentJson = JsonSerializer.Serialize(new BookingChangeDetails(equipment.Added, equipment.Removed, fields))
         });
     }
 
     private sealed record EquipmentChangeDetails(
         BookingEquipmentSnapshot[] Added, BookingEquipmentSnapshot[] Removed);
+
+    // Older rows contain only Added and Removed in the existing EquipmentJson column.
+    private sealed record BookingChangeDetails(
+        BookingEquipmentSnapshot[] Added, BookingEquipmentSnapshot[] Removed, BookingFieldChange[]? Fields);
 
     internal Task NotifyBookingCreatedAsync(Booking booking) =>
         DispatchNotificationAsync(async (notifications, cancellationToken) =>
@@ -221,6 +253,15 @@ public class BookingService(
 
     public async Task<List<BookingEquipmentChangePayload>> GetBookingEquipmentHistoryAsync(int id, int currentUserId, bool isAdmin)
     {
+        var changes = await GetBookingHistoryAsync(id, currentUserId, isAdmin);
+        return changes.Where(change => change.Added.Count > 0 || change.Removed.Count > 0)
+            .Select(change => new BookingEquipmentChangePayload(
+                change.Revision, change.ActorName, change.ChangedAt, change.Added, change.Removed))
+            .ToList();
+    }
+
+    public async Task<List<BookingChangePayload>> GetBookingHistoryAsync(int id, int currentUserId, bool isAdmin)
+    {
         var ownerId = await db.Bookings.Where(booking => booking.Id == id)
             .Select(booking => (int?)booking.UserId).SingleOrDefaultAsync()
             ?? throw new GraphQLException($"Бронирование с ID {id} не найдено");
@@ -233,9 +274,9 @@ public class BookingService(
 
         return changes.Select(change =>
         {
-            var equipment = JsonSerializer.Deserialize<EquipmentChangeDetails>(change.EquipmentJson)!;
-            return new BookingEquipmentChangePayload(
-                change.Revision, change.ActorName, change.ChangedAt, equipment.Added, equipment.Removed);
+            var details = JsonSerializer.Deserialize<BookingChangeDetails>(change.EquipmentJson)!;
+            return new BookingChangePayload(
+                change.Revision, change.ActorName, change.ChangedAt, details.Added, details.Removed, details.Fields ?? []);
         }).ToList();
     }
 
@@ -406,18 +447,20 @@ public class BookingService(
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
-        await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
+        var actor = await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
         EnsureRevision(booking, expectedRevision);
 
         if (booking.Status != BookingStatus.Pending)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
+        var before = GetHistoryValues(booking);
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Approved;
         booking.Revision++;
         if (!string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
+        RecordBookingChange(booking, actor, before);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
@@ -434,15 +477,17 @@ public class BookingService(
         var booking = await db.Bookings.FindAsync(bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
-        await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
+        var actor = await RequireDecisionActorAsync(actorUserId, requireAdmin: true);
         EnsureRevision(booking, expectedRevision);
 
         if (booking.Status != BookingStatus.Approved)
             throw new GraphQLException("Завершить можно только одобренное бронирование");
 
+        var before = GetHistoryValues(booking);
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Completed;
         booking.Revision++;
+        RecordBookingChange(booking, actor, before);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
@@ -461,7 +506,7 @@ public class BookingService(
             .FirstOrDefaultAsync(b => b.Id == bookingId)
             ?? throw new GraphQLException($"Бронирование с ID {bookingId} не найдено");
 
-        await RequireDecisionActorAsync(userId, requireAdmin: isAdmin);
+        var actor = await RequireDecisionActorAsync(userId, requireAdmin: isAdmin);
         EnsureRevision(booking, expectedRevision);
         var isOwner = booking.UserId == userId;
 
@@ -479,6 +524,7 @@ public class BookingService(
         if (!canCancelAsOwner && !canCancelAsAdmin)
             throw new GraphQLException("Бронирование недоступно для обработки");
 
+        var before = GetHistoryValues(booking);
         var oldStatus = booking.Status;
         booking.Status = BookingStatus.Cancelled;
         booking.Revision++;
@@ -486,6 +532,7 @@ public class BookingService(
         if (isAdmin && !string.IsNullOrWhiteSpace(adminComment))
             booking.AdminComment = adminComment;
 
+        RecordBookingChange(booking, actor, before);
         await db.SaveChangesAsync();
         await transaction.CommitAsync();
         var updatedBooking = await GetBookingEntityByIdAsync(bookingId);
@@ -644,11 +691,12 @@ public class BookingService(
             throw new GraphQLException("Не выбрано оборудование для бронирования");
     }
 
-    private async Task RequireDecisionActorAsync(int userId, bool requireAdmin)
+    private async Task<User> RequireDecisionActorAsync(int userId, bool requireAdmin)
     {
         var actor = await db.Users.AsNoTracking().SingleOrDefaultAsync(user => user.Id == userId);
         if (actor is null || (requireAdmin && (actor.Banned || actor.Role != UserRole.Admin)))
             throw new GraphQLException("У вас нет прав для этого действия");
+        return actor;
     }
 
     private static void EnsureRevision(Booking booking, int expectedRevision)

@@ -226,14 +226,30 @@ public class BookingAllocationTests
         await fixture.Carts.SetCartItemSelectionAsync(2, 1, [1, 2]);
         var adminEdit = await fixture.Carts.UpdateBookingFromCartAsync(2, booking.Id, true);
 
-        var later = Input(new CreateBookingEquipmentInput(1, 2, [2, 1])) with { EndTime = Start.AddHours(3) };
-        await fixture.Bookings.UpdateBookingAsync(booking.Id, later, 1, false);
+        await fixture.Carts.PrepareBookingEditAsync(1, booking.Id, false);
+        await fixture.Carts.SetCartDetailsAsync(1, new("Интервью", Start.AddHours(1), Start.AddHours(3), "Новая студия"));
+        var detailsEdit = await fixture.Carts.UpdateBookingFromCartAsync(1, booking.Id, false);
+        var unchanged = new CreateBookingInput("Интервью", Start.AddHours(1), Start.AddHours(3), "Новая студия",
+            [new CreateBookingEquipmentInput(1, 2, [2, 1])]);
+        await fixture.Bookings.UpdateBookingAsync(booking.Id, unchanged, 1, false);
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.UpdateBookingAsync(
             booking.Id, Input(new CreateBookingEquipmentInput(1, 1, [999])), 1, false));
 
         var model = (await fixture.Db.EqModels.FindAsync(1))!;
         model.Name = "New camera name";
         await fixture.Db.SaveChangesAsync();
+
+        var allChanges = await fixture.Bookings.GetBookingHistoryAsync(booking.Id, 1, false);
+        var detailsChange = allChanges[0];
+        Assert.Equal(new[] { detailsEdit.Revision, adminEdit.Revision, ownerEdit.Revision },
+            allChanges.Select(change => change.Revision));
+        Assert.Equal("Owner", detailsChange.ActorName);
+        Assert.Empty(detailsChange.Added);
+        Assert.Empty(detailsChange.Removed);
+        Assert.Contains(new BookingFieldChange(BookingHistoryField.StartTime, Start.ToString("O"), Start.AddHours(1).ToString("O")), detailsChange.Fields);
+        Assert.Contains(new BookingFieldChange(BookingHistoryField.EndTime, Start.AddHours(2).ToString("O"), Start.AddHours(3).ToString("O")), detailsChange.Fields);
+        Assert.Contains(new BookingFieldChange(BookingHistoryField.Reason, "Съемка", "Интервью"), detailsChange.Fields);
+        Assert.Contains(new BookingFieldChange(BookingHistoryField.Comment, null, "Новая студия"), detailsChange.Fields);
 
         var history = await fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 1, false);
         Assert.Collection(history, adminChange =>
@@ -254,6 +270,49 @@ public class BookingAllocationTests
 
         Assert.Equal(2, (await fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 2, true)).Count);
         await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.GetBookingEquipmentHistoryAsync(booking.Id, 2, false));
+        await Assert.ThrowsAsync<GraphQLException>(() => fixture.Bookings.GetBookingHistoryAsync(booking.Id, 2, false));
+    }
+
+    [Fact]
+    public async Task BookingHistoryIncludesStatusDecisionsAndReadsLegacyEquipmentEntries()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var input = Input(new CreateBookingEquipmentInput(1, 1, [1]));
+        var booking = await fixture.Bookings.CreateBookingAsync(input, 1);
+        var edited = await fixture.Bookings.UpdateBookingAsync(
+            booking.Id, Input(new CreateBookingEquipmentInput(1, 1, [2])), 1, false);
+        await fixture.Db.BookingEquipmentChanges.ExecuteUpdateAsync(changes => changes.SetProperty(
+            change => change.EquipmentJson,
+            """{"Added":[{"EqItemId":2,"ModelName":"Camera","InventoryNumber":"CAM-2"}],"Removed":[]}"""));
+
+        var approved = await fixture.Bookings.ApproveBookingAsync(booking.Id, edited.Revision, 2, "Admin: Согласовано");
+        var completed = await fixture.Bookings.CompleteBookingAsync(booking.Id, approved.Revision, 2);
+
+        var changes = await fixture.Bookings.GetBookingHistoryAsync(booking.Id, 1, false);
+        Assert.Collection(changes, completion =>
+        {
+            Assert.Equal(completed.Revision, completion.Revision);
+            Assert.Equal("Admin", completion.ActorName);
+            Assert.Equal(new BookingFieldChange(BookingHistoryField.Status, "Approved", "Completed"),
+                Assert.Single(completion.Fields));
+        }, approval =>
+        {
+            Assert.Equal(approved.Revision, approval.Revision);
+            Assert.Contains(new BookingFieldChange(BookingHistoryField.Status, "Pending", "Approved"), approval.Fields);
+            Assert.Contains(new BookingFieldChange(BookingHistoryField.AdminComment, null, "Admin: Согласовано"), approval.Fields);
+        }, legacy =>
+        {
+            Assert.Equal(edited.Revision, legacy.Revision);
+            Assert.Empty(legacy.Fields);
+            Assert.Equal("CAM-2", Assert.Single(legacy.Added).InventoryNumber);
+        });
+
+        var another = await fixture.Bookings.CreateBookingAsync(input, 1);
+        await fixture.Bookings.CancelBookingAsync(another.Id, 1, false, another.Revision);
+        var cancellation = Assert.Single(await fixture.Bookings.GetBookingHistoryAsync(another.Id, 1, false));
+        Assert.Equal("Owner", cancellation.ActorName);
+        Assert.Equal(new BookingFieldChange(BookingHistoryField.Status, "Pending", "Cancelled"),
+            Assert.Single(cancellation.Fields));
     }
 
     [Fact]

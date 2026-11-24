@@ -18,3 +18,23 @@ public sealed record BookingEquipmentChangePayload(
     DateTime ChangedAt,
     IReadOnlyList<BookingEquipmentSnapshot> Added,
     IReadOnlyList<BookingEquipmentSnapshot> Removed);
+
+public enum BookingHistoryField
+{
+    StartTime,
+    EndTime,
+    Reason,
+    Comment,
+    AdminComment,
+    Status
+}
+
+public sealed record BookingFieldChange(BookingHistoryField Field, string? Before, string? After);
+
+public sealed record BookingChangePayload(
+    int Revision,
+    string ActorName,
+    DateTime ChangedAt,
+    IReadOnlyList<BookingEquipmentSnapshot> Added,
+    IReadOnlyList<BookingEquipmentSnapshot> Removed,
+    IReadOnlyList<BookingFieldChange> Fields);
